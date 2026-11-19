@@ -95,14 +95,20 @@ class Tree:
                 return child, child_doc, box
         return None
 
-    def text_in(self, node, in_doc, rect, out, parent_text=""):
+    def text_in(self, node, in_doc, rect, out, parent_text="", parent_inline=False):
+        """
+        `parent_inline`: the nearest text-holding ancestor holds its children's
+        text itself (no embedded-object markers), as Chromium does, repeating it
+        whole or per line in inline children; those repeats are skipped.
+        """
         for child, child_doc, box in self.children(node, in_doc, rect):
-            t = own_text(child)
+            t, embeds = node_text(child)
             if t and self.clip and box is not None and not inside(box, rect):
                 t = self.clipped(child, child_doc, box, rect, t)
-            if t and t not in parent_text:  # Chromium repeats a node's text, whole or per line, in inline children
+            repeat = t in parent_text if parent_inline else t == parent_text
+            if t and not repeat:
                 out.append(t)
-            self.text_in(child, child_doc, rect, out, t or parent_text)
+            self.text_in(child, child_doc, rect, out, *((t, not embeds) if t else (parent_text, parent_inline)))
 
     def clipped(self, node, in_doc, box, rect, whole):
         """
@@ -181,12 +187,16 @@ def inside(a, b):
     return a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2] and a[1] + a[3] <= b[1] + b[3]
 
 
-def own_text(node):
-    """Text the node holds itself; children's text comes from the children."""
+def node_text(node):
+    """The node's own text (embedded children's text comes from the children), and whether it embeds any."""
     if not safe(node.get_text_iface):
-        return ""
+        return "", False
     content = safe(lambda: Atspi.Text.get_text(node, 0, Atspi.Text.get_character_count(node)), "") or ""
-    return " ".join(content.replace(OBJECT_CHAR, " ").split())
+    return " ".join(content.replace(OBJECT_CHAR, " ").split()), OBJECT_CHAR in content
+
+
+def own_text(node):
+    return node_text(node)[0]
 
 
 def find_frame(req):
