@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
 import { captureScale } from "../src/capture.ts";
-import { extentOf, takeSnapshot } from "../src/layout.ts";
+import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs } from "../src/tools/invasive.ts";
@@ -62,15 +62,25 @@ describe("layout snapshots", () => {
   it("scopes to the given outputs", () => {
     const saved = takeSnapshot(snap, g, ["HDMI-A-1"]);
     expect(saved.scope).toEqual(["HDMI-A-1"]);
-    expect(Object.keys(saved.activeWorkspaces)).toEqual(["HDMI-A-1"]);
-    expect(saved.windows.every((w) => w.workspace.startsWith("HDMI-A-1"))).toBe(true);
-    expect(Object.keys(saved.layouts).every((id) => id.startsWith("HDMI-A-1"))).toBe(true);
+    expect(saved.windows.every((w) => w.workspace.output === "HDMI-A-1")).toBe(true);
+    expect(saved.workspaces.every((ws) => ws.ref.output === "HDMI-A-1")).toBe(true);
   });
 
   it("records workspace, layout, visibility and width", () => {
     const saved = takeSnapshot(snap, g);
-    expect(saved.activeWorkspaces).toEqual({ "DP-2": "DP-2:6", "HDMI-A-1": "HDMI-A-1:3" });
-    expect(saved.windows.find((w) => w.workspace === "DP-2:6")?.extent).toBeCloseTo(0.9, 1);
+    expect(saved.workspaces.filter((ws) => ws.active).map((ws) => `${ws.ref.output} ${ws.ref.name}`)).toEqual(["DP-2 Dump", "HDMI-A-1 Dump"]);
+    expect(saved.windows.find((w) => w.workspace.name === "Dump")?.extent).toBeCloseTo(0.9, 1);
+  });
+
+  it("finds named workspaces by name and dynamic ones by position", () => {
+    const ws = (id: string, name: string, named: boolean, index: number) => ({
+      id, name, named, index, output: "V", layout: "scrolling", active: false, focused: false, window_count: 0,
+    });
+    // Dynamic "V:1" emptied and vanished; "V:3" is now first.
+    const now = [ws("V:3", "1", false, 1), ws("V:4", "2", false, 2), ws("V:9", "Mail", true, 3)];
+    expect(resolveRef({ output: "V", name: "2", named: false, index: 2 }, now)?.id).toBe("V:4");
+    expect(resolveRef({ output: "V", name: "Mail", named: true, index: 1 }, now)?.id).toBe("V:9");
+    expect(resolveRef({ output: "V", name: "5", named: false, index: 5 }, now)).toBeUndefined();
   });
 });
 

@@ -29,6 +29,8 @@ const WindowSchema = z.object({
 const WorkspaceSchema = z.object({
   id: z.string(),
   name: z.string(),
+  /** Configured workspaces persist; unnamed ones are dynamic and vanish (renumbering the rest) when empty. */
+  named: z.boolean(),
   index: z.number(),
   output: z.string(),
   layout: z.string(),
