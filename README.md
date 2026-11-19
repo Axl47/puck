@@ -69,7 +69,7 @@ puck keys --overlay selection Escape              # or cancel it
 
 ### OCR
 
-Text from apps without an accessibility tree is read by `tesseract` from a capture at the output's own pixels. Puck first makes text dark on light, paints out ruling lines (table grids, TUI frames) and the slash in slashed zeros, and afterwards reads `O` beside digits as `0`. Terminal windows and anything with a ruled grid are read row by row; other targets keep tesseract's layout analysis, so page columns stay apart. A region cutting through a line of text returns junk for that line.
+Text from apps without an accessibility tree is read by `tesseract` from a capture at the output's own pixels. Puck first makes text dark on white whatever its colour (red errors, a status bar, a selection), paints out ruling lines (table grids, TUI frames) and the slash in slashed zeros, and afterwards reads `O` beside digits as `0`. Terminal windows and anything with a ruled grid are read row by row; other targets keep tesseract's layout analysis, so page columns stay apart. A region cutting through a line of text returns junk for that line.
 
 ## Environment
 

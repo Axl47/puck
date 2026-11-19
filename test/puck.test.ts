@@ -7,7 +7,7 @@ import { captureDensity, grimScale } from "../src/capture.ts";
 import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../src/inspect.ts";
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
-import { cleanForOcr, darkOnLight, digitZeros, parsePnm } from "../src/ocr.ts";
+import { cleanForOcr, digitZeros, type Gray, parsePnm, toInk } from "../src/ocr.ts";
 import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs, overlayKeysRefusal } from "../src/keys.ts";
@@ -331,22 +331,72 @@ describe("input into overlays", () => {
 
 describe("OCR preparation", () => {
   // Rows captured from foot (Iosevka, dark theme, 1.6 scale) and a bordered table in Helium.
-  const image = (name: string) => {
-    const img = parsePnm(readFileSync(new URL(`fixtures/${name}.pgm`, import.meta.url)));
-    darkOnLight(img);
-    return img;
+  const fixture = (name: string) => parsePnm(readFileSync(new URL(`fixtures/${name}`, import.meta.url)));
+  const image = (name: string) => toInk(fixture(`${name}.pgm`)).ink;
+  /** Pixels darker than mid-gray within the rectangle. */
+  const inkIn = (img: Gray, x0: number, y0: number, x1: number, y1: number) => {
+    let n = 0;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (img.data[y * img.width + x]! < 128) n++;
+    return n;
   };
 
-  it("parses grim's PPM as luma", () => {
+  it("parses grim's PPM as RGB", () => {
     const ppm = Buffer.concat([Buffer.from("P6\n2 1\n255\n"), Buffer.from([255, 255, 255, 0, 0, 255])]);
-    expect(parsePnm(ppm)).toEqual({ width: 2, height: 1, data: new Uint8Array([255, 29]) });
+    expect(parsePnm(ppm)).toEqual({ width: 2, height: 1, channels: 3, data: new Uint8Array([255, 255, 255, 0, 0, 255]) });
   });
 
-  it("inverts light text on dark only", () => {
-    const img = parsePnm(Buffer.concat([Buffer.from("P5\n4 1\n255\n"), Buffer.from([10, 10, 10, 240])]));
-    expect(darkOnLight(img)).toBe(true);
-    expect([...img.data]).toEqual([245, 245, 245, 15]);
-    expect(darkOnLight(img)).toBe(false);
+  it("inks any colour that differs from the background, on dark or light", () => {
+    // foot's background, then its red and white; then black on white.
+    const dark = [20, 42, 51, 20, 42, 51, 20, 42, 51, 216, 71, 60, 232, 237, 230];
+    const ppm = (px: number[]) => Buffer.concat([Buffer.from(`P6\n${px.length / 3} 1\n255\n`), Buffer.from(px)]);
+    expect([...toInk(parsePnm(ppm(dark))).ink.data]).toEqual([255, 255, 255, 0, 0]);
+    expect([...toInk(parsePnm(ppm([255, 255, 255, 255, 255, 255, 0, 0, 0]))).ink.data]).toEqual([255, 255, 0]);
+  });
+
+  it("inks gcc's red as much as its white", () => {
+    // `src/widget.c:4:17: error: implicit` over `4 | int count = frobnicate_widget(42);`, fullscreen,
+    // where luma dropped the red words.
+    const { ink } = toInk(fixture("ocr-colour.ppm"));
+    const white = inkIn(ink, 355, 0, 460, 31); // implicit
+    expect(inkIn(ink, 250, 0, 345, 31)).toBeGreaterThan(white * 0.6); // error:
+    expect(inkIn(ink, 310, 32, 560, 63)).toBeGreaterThan(white * 2); // frobnicate_widget(42)
+  });
+
+  /** Ink in each box is text-like: there, and not a slab. */
+  const textLike = (img: Gray, ...boxes: [number, number, number, number][]) =>
+    boxes.map(([x0, y0, x1, y1]) => {
+      const share = inkIn(img, x0, y0, x1, y1) / ((x1 - x0 + 1) * (y1 - y0 + 1));
+      return share > 0.08 && share < 0.4;
+    });
+
+  it("reads text inside coloured blocks rather than inking the block", () => {
+    // A status bar (NORMAL, main.rs, Ln 142…), a selection, WARNING and PENDING badges.
+    const { ink, blocks } = toInk(fixture("ocr-blocks.ppm"));
+    expect(blocks).toBe(6);
+    expect(textLike(ink, [6, 125, 114, 150])).toEqual([true]); // PENDING
+  });
+
+  it("reads text beside and inside a selection that fills most of a region", () => {
+    // A selection wrapping over three rows from mid-row to mid-row: the selection is the paper here.
+    const { ink } = toInk(fixture("ocr-selection.ppm"));
+    const boxes: [number, number, number, number][] = [
+      [70, 2, 515, 30], // before it: let frames = self.by_window.get(id)?;
+      [525, 2, 760, 30], // in it: let newest = frames
+      [505, 66, 700, 94], // after it: newest.clone()
+    ];
+    expect(textLike(ink, ...boxes)).toEqual([true, true, true]);
+  });
+
+  it("keeps a block from spreading to a nearby edge", () => {
+    // A 24 px bar 5 px below the top, with a glyph in it, and a row of glyphs further down.
+    const width = 128;
+    const data = new Uint8Array(width * 100).fill(20);
+    data.fill(200, 5 * width, 29 * width);
+    for (let y = 11; y < 23; y++) data.fill(20, y * width + 24, y * width + 27);
+    for (let y = 45; y < 59; y++) for (const x of [10, 20, 30, 40, 50]) data.fill(255, y * width + x, y * width + x + 3);
+    const { ink, blocks } = toInk({ width, height: 100, channels: 1, data });
+    expect(blocks).toBe(1);
+    expect([ink.data[64], ink.data[4 * width + 64]]).toEqual([255, 255]); // the rows above it stay paper
   });
 
   it("plains slashed zeros and nothing that looks like one", () => {
