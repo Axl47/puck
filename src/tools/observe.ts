@@ -4,8 +4,7 @@ import { TEXT_MODES, inspect } from "../inspect.ts";
 import { onScreen } from "../pointer.ts";
 import { notifications, shellState } from "../noctalia.ts";
 import { type Snapshot, findOutput, findWindow, snapshot } from "../umbriel.ts";
-import { desktop, followWardDesktop } from "../exec.ts";
-import { afterActions } from "../umbriel.ts";
+import { desktop, followWardDesktop, onDesktop } from "../exec.ts";
 import { type Register, assertShell, json } from "./common.ts";
 
 /**
@@ -76,15 +75,16 @@ export const registerObserve: Register = (server, session) => {
       annotations: { readOnlyHint: true },
     },
     async ({ desktop: wanted }) => {
-      if (wanted) {
-        await afterActions(() => followWardDesktop(wanted === "ward"));
-        if (wanted === "ward" && desktop() === "live") throw new Error("This folder has no ward, so the live session is the only desktop.");
-      }
-      const on = desktop();
-      const snap = await snapshot();
-      // Best effort: the desktop view still works while Noctalia restarts.
-      const shell = on === "ward" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
-      return json({ desktop: on, ...describeDesktop(snap, session.owned), shell });
+      if (wanted) followWardDesktop(wanted === "ward");
+      // Chosen again, for the switch: this call started on the desktop it is leaving.
+      return onDesktop(async () => {
+        const on = desktop();
+        if (wanted === "ward" && on === "live") throw new Error("This folder has no ward, so the live session is the only desktop.");
+        const snap = await snapshot();
+        // Best effort: the desktop view still works while Noctalia restarts.
+        const shell = on === "ward" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
+        return json({ desktop: on, ...describeDesktop(snap, session.owned), shell });
+      });
     },
   );
 

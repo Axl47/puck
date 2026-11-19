@@ -183,10 +183,10 @@ function resumeFollowsMouse(env = desktopEnv()): void {
   rmSync(paused, { force: true }); // a dying holder's flock child may race us to it
 }
 
-let pausedHere = false;
+/** The desktop this process has focus-follows-mouse paused on, for the exit handler. */
+let pausedOn: ReturnType<typeof desktopEnv> | undefined;
 process.once("exit", () => {
-  // The desktop it was paused on: asking Ward again here could start a stopped ward.
-  if (pausedHere) resumeFollowsMouse(desktopEnv(true));
+  if (pausedOn) resumeFollowsMouse(pausedOn);
 });
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => process.exit(1));
 
@@ -238,7 +238,7 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
         run("umbriel", ["config", "get", FOLLOWS_MOUSE]),
       ]);
       writeFileSync(pausedPath(), follows.trim());
-      pausedHere = true;
+      pausedOn = desktopEnv();
       await run("umbriel", ["config", "set", FOLLOWS_MOUSE, '"off"']);
 
       let expected = original?.id ?? null;
@@ -284,20 +284,13 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
           }
         } finally {
           resumeFollowsMouse();
-          pausedHere = false;
+          pausedOn = undefined;
         }
       }
     } finally {
       release();
     }
   });
-  queue = task.catch(() => {});
-  return task;
-}
-
-/** Runs `fn` once the actions queued so far are done, so it can't land in the middle of one. */
-export function afterActions<T>(fn: () => T): Promise<T> {
-  const task = queue.then(fn);
   queue = task.catch(() => {});
   return task;
 }

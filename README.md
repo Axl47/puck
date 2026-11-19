@@ -36,12 +36,12 @@ Apps without a tree (foot, most games, images) get OCR instead.
 
 ## Which desktop
 
-Puck acts on the desktop its environment names (`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `UMBRIEL_SOCKET`, `DBUS_SESSION_BUS_ADDRESS`).
+For an agent in a warded T3 worktree, Puck acts on that ward's private desktop, starting it on first use; everywhere else, on the live session. It asks `ward desktop` each time, and if that fails it says so rather than falling back to your screen.
 
-- **CLI:** the live session, unless you prefix it: `ward desktop -- puck state` reads the ward's private desktop.
-- **MCP server:** in a warded T3 worktree it asks `ward desktop` and acts on that ward's desktop, starting it on first use. Elsewhere it acts on the live session. `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"ward"` moves it back).
+- **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"ward"` moves it back).
+- **CLI:** `puck state` says which. Inside a ward it is the ward's desktop; `PUCK_DESKTOP=live puck …` acts on your screen. Outside a ward it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
 
-A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, and X11-only apps don't run.
+A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply.
 
 ## Tools
 

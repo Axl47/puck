@@ -95,27 +95,33 @@ Puck acts on the desktop its child processes' environment names
 (`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `UMBRIEL_SOCKET`,
 `DBUS_SESSION_BUS_ADDRESS`): `umbriel`, `grim`, the Wayland helper and AT-SPI
 all find their sockets through those, and so does Puck's own lock (below).
-`exec.ts` builds that environment one of two ways.
+`exec.ts` picks that environment once per MCP tool call or CLI command
+(`onDesktop`), and everything the call runs gets it, so a call can't start on one
+desktop and finish on another when a second call switches, or when the ward
+restarts under it.
 
-- **The CLI follows its environment**, like any Wayland program. `ward desktop
-  -- puck state` reads the ward's desktop; a bare `puck state`, in a ward or
-  not, reads the live session (finding its display when `WAYLAND_DISPLAY` is
-  unset).
-- **The MCP server asks Ward.** It is one process outside the ward for the
-  whole thread, so nothing can prefix its calls. It runs `ward desktop` in its
-  own folder: exit 0 prints the ward desktop's environment (starting the ward
-  and the desktop when they aren't up), exit 3 means the folder has no ward, and
-  a missing `ward` means the machine has none; both of those are the live
-  session, for good. Any other failure is reported to the agent, not papered
-  over with the live session: that would put its windows on the user's screen.
-  The answer is asked again after 2 s, since the ward may have stopped and
-  restarted between tool calls; once the desktop is up `ward desktop` is a
-  shell script reading two files (8 ms).
+- **For an agent in a ward, the ward's desktop.** Puck runs `ward desktop` in
+  its own folder: exit 0 prints the ward desktop's environment (starting the
+  ward and the desktop when they aren't up; a shell script reading two files,
+  about 10 ms, once they are), exit 3 means the folder has no ward, and a
+  missing `ward` means the machine has none; both of those are the live
+  session. Any other failure is reported to the agent, not papered over with
+  the live session: that would put its windows on the user's screen. The MCP
+  server always asks (it is one process outside the ward for the whole thread,
+  so nothing could prefix its calls); the CLI asks when it runs inside a ward
+  (`WARD_ID` is set), where an agent's shell still has the live session's
+  environment and a bare `puck pointer click` would otherwise land on the
+  user's screen.
+- **Otherwise the live session,** or whatever the environment names: the CLI
+  outside a ward is an ordinary Wayland program, so `ward desktop -- puck state`
+  from the host reads that ward's desktop.
 
 `desktop_state` reports which one (`desktop: "ward" | "live"`) and takes the
 same field to move the session, for when the user wants something on their own
-screen. The switch waits for queued actions, so it can't land in the middle of
-one. It is per MCP server, so subagents sharing the server share it.
+screen; `PUCK_DESKTOP=live` does the same for one CLI command in a ward. The
+switch applies to calls that start after it, and it is per MCP server, so
+subagents sharing the server share it. `PUCK_OUTPUTS` names the user's monitors,
+so it limits nothing on a ward's desktop.
 
 A ward's desktop has no Noctalia: `desktop_state` gives `shell: null`, and
 `notifications`, `dismiss_notification` and `shell_settings` refuse there

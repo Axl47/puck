@@ -4,7 +4,7 @@ import { registerArrange } from "./tools/arrange.ts";
 import type { Session } from "./tools/common.ts";
 import { registerInvasive } from "./tools/invasive.ts";
 import { registerObserve } from "./tools/observe.ts";
-import { followWardDesktop } from "./exec.ts";
+import { followWardDesktop, onDesktop } from "./exec.ts";
 
 /** True when the invasive tier (close, kill, typing) is enabled for this server. */
 export const invasiveEnabled = () => process.env.PUCK_INVASIVE === "1";
@@ -20,6 +20,13 @@ export function createServer(): McpServer {
         "There, actions move the user's cursor onto the window they act on; batch them.",
     },
   );
+  // Every tool call acts on one desktop, chosen as it starts. The SDK types a
+  // handler by its tool's schema, so the wrapper is put back to that type.
+  const registerTool = server.registerTool.bind(server);
+  server.registerTool = ((name, config, handler) => {
+    const call = handler as (...args: unknown[]) => unknown;
+    return registerTool(name, config, ((...args: unknown[]) => onDesktop(() => call(...args))) as typeof handler);
+  }) as typeof registerTool;
   const session: Session = { owned: new Set() };
   registerObserve(server, session);
   registerArrange(server, session);

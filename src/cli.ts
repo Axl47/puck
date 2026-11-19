@@ -4,6 +4,7 @@ import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, par
 import { pressKeys } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, movePointer, pointerInput } from "./pointer.ts";
+import { desktop, followWardDesktop, onDesktop } from "./exec.ts";
 import { serveStdio } from "./server.ts";
 import { spendToday } from "./t3.ts";
 import { describeDesktop } from "./tools/observe.ts";
@@ -30,19 +31,29 @@ const usage = `Usage: puck <command>
 
 Input is refused while a shell surface has the keyboard; --overlay NS sends it into
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
-Coordinates are global logical pixels. PUCK_OUTPUTS limits input to those outputs.`;
+Coordinates are global logical pixels. PUCK_OUTPUTS limits input to those outputs.
+In a ward, commands act on its private desktop; PUCK_DESKTOP=live acts on the live session.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 
 try {
+  if (command === "mcp") await serveStdio();
+  else {
+    // In a ward, its desktop: an agent's shell there has the live session's environment.
+    followWardDesktop(Boolean(process.env.WARD_ID) && process.env.PUCK_DESKTOP !== "live");
+    await onDesktop(runCommand);
+  }
+} catch (err) {
+  console.error(`puck: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+}
+
+async function runCommand(): Promise<void> {
   switch (command) {
-    case "mcp":
-      await serveStdio();
-      break;
     case "state":
-      print(describeDesktop(await snapshot(), new Set()));
+      print({ desktop: desktop(), ...describeDesktop(await snapshot(), new Set()) });
       break;
     case "snapshot":
       print({ snapshot_id: (await saveLayout(args.length ? args : undefined)).id });
@@ -67,9 +78,6 @@ try {
       console.error(usage);
       process.exit(command === "help" || command === "--help" ? 0 : 2);
   }
-} catch (err) {
-  console.error(`puck: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], flag: string): T | undefined {

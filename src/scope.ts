@@ -1,5 +1,11 @@
-/** Outputs mutating tools may touch, from PUCK_OUTPUTS (comma-separated); null means all. */
+import { desktop } from "./exec.ts";
+
+/**
+ * Outputs mutating tools may touch, from PUCK_OUTPUTS (comma-separated); null
+ * means all. It names the user's monitors, so it doesn't apply on a ward's desktop.
+ */
 export function allowedOutputs(): string[] | null {
+  if (desktop() === "ward") return null;
   const list = process.env.PUCK_OUTPUTS?.split(",").map((s) => s.trim()).filter(Boolean);
   return list?.length ? list : null;
 }
