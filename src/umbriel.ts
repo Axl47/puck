@@ -2,7 +2,7 @@ import { z } from "zod";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CommandError, desktopEnv, run, runtimeDir } from "./exec.ts";
+import { CommandError, desktopEnv, run } from "./exec.ts";
 import { allowedOutputs } from "./scope.ts";
 
 // Umbriel's `--json` output, trimmed to the fields Puck uses. Unknown keys are dropped.
@@ -140,9 +140,10 @@ export function findOutput(snap: Pick<Snapshot, "outputs">, name: string): Outpu
 
 
 const FOLLOWS_MOUSE = "input.focus.follows_mouse";
-const lockPath = () => join(runtimeDir, "puck.lock");
+// Both live in the desktop's own runtime folder, so each desktop has its own lock.
+const lockPath = () => join(desktopEnv().XDG_RUNTIME_DIR, "puck.lock");
 /** Holds the user's focus-follows-mouse value while an action has it paused. */
-const pausedPath = () => join(runtimeDir, "puck-follows-mouse");
+const pausedPath = (env = desktopEnv()) => join(env.XDG_RUNTIME_DIR, "puck-follows-mouse");
 
 /**
  * Takes the desktop lock every Puck process shares (each agent's MCP server,
@@ -172,18 +173,20 @@ rm -f "$f"`;
  * `unset` drops Puck's override; the recorded value is set again only if the
  * user had an override of their own. Synchronous so it can run on exit.
  */
-function resumeFollowsMouse(): void {
-  if (!existsSync(pausedPath())) return;
-  const want = readFileSync(pausedPath(), "utf8");
-  const umbriel = (...args: string[]) => execFileSync("umbriel", ["config", ...args], { env: desktopEnv(), encoding: "utf8" });
+function resumeFollowsMouse(env = desktopEnv()): void {
+  const paused = pausedPath(env);
+  if (!existsSync(paused)) return;
+  const want = readFileSync(paused, "utf8");
+  const umbriel = (...args: string[]) => execFileSync("umbriel", ["config", ...args], { env, encoding: "utf8" });
   umbriel("unset", FOLLOWS_MOUSE);
   if (umbriel("get", FOLLOWS_MOUSE).trim() !== want) umbriel("set", FOLLOWS_MOUSE, JSON.stringify(want));
-  rmSync(pausedPath(), { force: true }); // a dying holder's flock child may race us to it
+  rmSync(paused, { force: true }); // a dying holder's flock child may race us to it
 }
 
 let pausedHere = false;
 process.once("exit", () => {
-  if (pausedHere) resumeFollowsMouse();
+  // The desktop it was paused on: asking Ward again here could start a stopped ward.
+  if (pausedHere) resumeFollowsMouse(desktopEnv(true));
 });
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => process.exit(1));
 
@@ -288,6 +291,13 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
       release();
     }
   });
+  queue = task.catch(() => {});
+  return task;
+}
+
+/** Runs `fn` once the actions queued so far are done, so it can't land in the middle of one. */
+export function afterActions<T>(fn: () => T): Promise<T> {
+  const task = queue.then(fn);
   queue = task.catch(() => {});
   return task;
 }

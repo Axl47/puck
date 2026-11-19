@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp, windowHints } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
@@ -431,5 +433,46 @@ describe("accessibility coordinates", () => {
   it("keeps a document that reports logical pixels (Firefox) as is", () => {
     expect(py(`a11y.document_scale(1418, 1418, 1.6)`)).toBe(1);
     expect(py(`a11y.document_scale(1380, 1418, 1.6)`)).toBe(1);
+  });
+});
+
+describe("which desktop", () => {
+  /** A fresh exec.ts whose `ward` is a script with this body. */
+  async function withWard(body: string) {
+    const bin = mkdtempSync(join(tmpdir(), "puck-ward-"));
+    writeFileSync(join(bin, "ward"), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, "ward"), 0o755);
+    vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+    vi.stubEnv("WAYLAND_DISPLAY", "wayland-live");
+    vi.resetModules();
+    return import("../src/exec.ts");
+  }
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("follows the ward's desktop only when told to, and takes its whole environment", async () => {
+    const exec = await withWard("printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'");
+    expect(exec.desktop()).toBe("live");
+    expect(exec.desktopEnv().WAYLAND_DISPLAY).toBe("wayland-live");
+    exec.followWardDesktop(true);
+    expect(exec.desktop()).toBe("ward");
+    expect(exec.desktopEnv()).toMatchObject({
+      XDG_RUNTIME_DIR: "/run/w/desktop",
+      WAYLAND_DISPLAY: "wayland-0",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/w/desktop/bus,guid=1",
+      DISPLAY: "",
+    });
+  });
+
+  it("is the live session where Ward says the folder has no ward", async () => {
+    const exec = await withWard("exit 3");
+    exec.followWardDesktop(true);
+    expect(exec.desktop()).toBe("live");
+    expect(exec.desktopEnv().WAYLAND_DISPLAY).toBe("wayland-live");
+  });
+
+  it("reports a ward desktop that didn't start instead of falling back to the live session", async () => {
+    const exec = await withWard("echo 'ward: its desktop failed to start' >&2; exit 1");
+    exec.followWardDesktop(true);
+    expect(() => exec.desktopEnv()).toThrow(/didn't start: ward: its desktop failed to start/);
   });
 });

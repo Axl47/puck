@@ -27,7 +27,7 @@ import {
   workspaceArgs,
   workspaces,
 } from "../umbriel.ts";
-import { type Register, allowedOutputs, assertOutputs, assertUnrestricted, json } from "./common.ts";
+import { type Register, allowedOutputs, assertOutputs, assertShell, assertUnrestricted, json } from "./common.ts";
 
 const reversible = { readOnlyHint: false, destructiveHint: false } as const;
 /** Changes nothing can undo exactly (a dismissed notification, a replaced setting). */
@@ -301,6 +301,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: lasting,
     },
     async ({ id, all }) => {
+      assertShell("Notifications");
       assertUnrestricted("Dismissing notifications");
       if (all) await clearActiveNotifications();
       else if (id !== undefined) await dismissNotification(id);
@@ -323,6 +324,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: lasting,
     },
     async ({ wallpaper, theme_mode, do_not_disturb }) => {
+      assertShell("Shell settings");
       assertUnrestricted("Changing shell settings");
       if (wallpaper && !(isAbsolute(wallpaper.path) && statSync(wallpaper.path, { throwIfNoEntry: false })?.isFile())) {
         throw new Error(`No image file at ${wallpaper.path} (the path must be absolute).`);

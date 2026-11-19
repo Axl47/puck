@@ -2,7 +2,7 @@
 
 # Puck
 
-Lets agents see and drive the real desktop on gaia-arch (Umbriel + Noctalia), and shows live T3 agent status in the Noctalia bar. See [DESIGN.md](DESIGN.md).
+Lets agents see and drive a desktop on gaia-arch: the real one (Umbriel + Noctalia), or the private headless one of the agent's [ward](https://github.com/Axl47/ward). Also shows live T3 agent status in the Noctalia bar. See [DESIGN.md](DESIGN.md).
 
 ## Setup
 
@@ -33,6 +33,15 @@ Apps only expose their accessibility tree when AT-SPI is switched on (`org.a11y.
 - **Helium and other Chromium-based browsers** check only at launch: restart them once after switching it on (or launch with `--force-renderer-accessibility`). The page URL comes from the document's `URI` attribute.
 
 Apps without a tree (foot, most games, images) get OCR instead.
+
+## Which desktop
+
+Puck acts on the desktop its environment names (`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `UMBRIEL_SOCKET`, `DBUS_SESSION_BUS_ADDRESS`).
+
+- **CLI:** the live session, unless you prefix it: `ward desktop -- puck state` reads the ward's private desktop.
+- **MCP server:** in a warded T3 worktree it asks `ward desktop` and acts on that ward's desktop, starting it on first use. Elsewhere it acts on the live session. `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"ward"` moves it back).
+
+A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, and X11-only apps don't run.
 
 ## Tools
 
