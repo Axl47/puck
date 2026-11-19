@@ -232,6 +232,7 @@ describe("pointer geometry", () => {
   it("maps points onto the bounding box of all outputs", () => {
     expect(layoutBounds(snap.outputs)).toEqual({ x: 0, y: 0, width: 3200, height: 900 });
     expect(moveOp(snap.outputs, { x: 2000.4, y: 450 })).toEqual({ op: "move", x: 2000, y: 450, width: 3200, height: 900 });
+    expect(moveOp(snap.outputs, { x: 1599.6, y: 0 })).toMatchObject({ x: 1599 }); // stays on HDMI-A-1
     expect(() => moveOp(snap.outputs, { x: 4000, y: 10 })).toThrow(/no output/);
   });
 

@@ -133,12 +133,14 @@ probe needs to pass a shared-memory fd, which Node can't):
 - **Input**: wlr virtual-pointer: absolute motion, buttons, one wheel detent
   per frame (apps drop or cap a single large step).
 
-`click`, `drag` and `scroll` run inside `withFocus` (desktop lock,
-focus-follows-mouse paused), refuse while a shell panel holds the keyboard
-(it would take the input), move to the target, check the pointer landed there
-(a mismatch means the user is moving the mouse, so nothing is pressed), act,
-then hand focus back and return the pointer to where it was. `pointer_move`
-just moves and leaves it.
+`click`, `drag` and `scroll` first refuse targets outside `PUCK_OUTPUTS` and
+calls while a shell panel holds the keyboard (it would take the input). Then,
+inside `withFocus` (desktop lock, focus-follows-mouse paused), they move to the
+target, check the pointer landed on exactly that pixel (a mismatch means the
+user is moving the mouse, so nothing is pressed), act, hand focus back and
+return the pointer to where it was, still under the lock. `pointer_move` takes
+the lock, moves, and leaves the pointer there. Position probes take the lock
+too, so a probe's overlay can't catch another Puck's click.
 
 ### Inspect
 
@@ -157,6 +159,10 @@ Miranda's DESIGN.md specifies; fields may be added, never renamed or dropped.
   window, so boxes are offset by the frame's origin and, outside web documents,
   scaled by window size / frame size (Chromium's UI reports at its own scale).
   The walk stops after 6000 nodes or 4 s and says so in `errors`.
+- For a region, text of a node crossing its edge is cut to the characters
+  between the region's corners (reading order); when the app can't place
+  them, `auto` falls back to OCR. Chromium builds its tree only after an AT
+  asks for attributes, so the helper asks first and re-reads once if empty.
 - `--text auto` uses accessibility text when it is non-blank and the target
   lies within the window, OCR (`tesseract` on a native-resolution grim
   capture) otherwise.

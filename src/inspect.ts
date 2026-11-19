@@ -1,4 +1,4 @@
-import { readFileSync, readlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -87,11 +87,14 @@ const AccessibilitySchema = z.object({
     .nullable(),
   text: z.string().nullable(),
   truncated: z.boolean().optional(),
+  /** Some text node crossed the region's edge and couldn't be clipped to it. */
+  partial: z.boolean().optional(),
 });
 type Accessibility = z.infer<typeof AccessibilitySchema>;
 
-async function readAccessibility(w: Window, point: Point | null, rect: Rect | null): Promise<Accessibility> {
-  const request = { pid: w.pid, title: w.title, window: windowRect(w), point, rect, text: rect !== null };
+/** `clip`: keep only the text inside `rect` (a region), rather than all text of the nodes it touches. */
+async function readAccessibility(w: Window, point: Point | null, rect: Rect | null, clip: boolean): Promise<Accessibility> {
+  const request = { pid: w.pid, title: w.title, window: windowRect(w), point, rect, text: rect !== null, clip };
   return AccessibilitySchema.parse(JSON.parse(await run("python3", [helperPath("a11y.py"), JSON.stringify(request)])));
 }
 
@@ -164,7 +167,7 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
   let a11y: Accessibility | null = null;
   if (win) {
     try {
-      a11y = await readAccessibility(win, point, wantA11yText ? rect : null);
+      a11y = await readAccessibility(win, point, wantA11yText ? rect : null, target.kind === "region");
       if (!a11y.found) errors.push(`accessibility: ${win.app_id} isn't on the accessibility bus`);
       if (a11y.truncated) errors.push("accessibility: tree too large; text and element may be incomplete");
     } catch (err) {
@@ -176,22 +179,28 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
     target.kind === "region" || !win
       ? { kind: "region", ...rect, scale: output.scale }
       : { kind: "window", id: win.id, width: win.w, height: win.h, scale: output.scale };
-  const source = chooseTextSource(opts.text, a11y?.text ?? null, win !== null && within(rect, windowRect(win)));
+  const source = chooseTextSource(
+    opts.text,
+    a11y?.partial ? null : (a11y?.text ?? null), // text it couldn't clip to the region: OCR reads what's inside
+    win !== null && within(rect, windowRect(win)),
+  );
+  const failed = (what: string) => (err: unknown) => {
+    errors.push(`${what}: ${err instanceof Error ? err.message : String(err)}`);
+  };
   let screenshot: string | null = null;
-  let content = "";
-  if (opts.screenshot || source === "ocr") {
-    const path = opts.screenshot ?? join(tmpdir(), `puck-inspect-${process.pid}-${Date.now()}.png`);
-    screenshot = await captureToFile(capture, path);
-    try {
-      if (source === "ocr") content = await ocr(screenshot);
-    } finally {
-      if (!opts.screenshot) {
-        rmSync(screenshot, { force: true });
-        screenshot = null;
+  let content = source === "accessibility" ? (a11y?.text ?? "") : "";
+  if (opts.screenshot) screenshot = await captureToFile(capture, opts.screenshot).catch(failed("screenshot")) ?? null;
+  if (source === "ocr") {
+    if (screenshot) {
+      content = await ocr(screenshot).catch(failed("ocr")) ?? "";
+    } else {
+      const dir = mkdtempSync(join(tmpdir(), "puck-inspect-"));
+      try {
+        content = await captureToFile(capture, join(dir, "target.png")).then(ocr).catch(failed("ocr")) ?? "";
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
     }
-  } else if (source === "accessibility") {
-    content = a11y?.text ?? "";
   }
 
   const focusedId = snap.focused?.id;

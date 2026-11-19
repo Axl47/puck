@@ -191,6 +191,8 @@ type FocusOptions = {
   restoreFocus: boolean;
   /** Outputs whose visible workspace the action is meant to change. Every other output gets its workspace back. */
   shows?: readonly string[] | "all";
+  /** Runs after focus is put back, still under the lock with focus-follows-mouse paused (e.g. returning the pointer). */
+  cleanup?: () => Promise<void>;
 };
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -247,11 +249,29 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
       } finally {
         try {
           await putBack(original?.id ?? null, before, expected, opts);
+          await opts.cleanup?.();
         } finally {
           resumeFollowsMouse();
           pausedHere = false;
         }
       }
+    } finally {
+      release();
+    }
+  });
+  queue = task.catch(() => {});
+  return task;
+}
+
+/**
+ * Runs `fn` holding the desktop lock, without touching focus: for pointer
+ * reads and moves, which must not interleave with another Puck's input.
+ */
+export function withDesktopLock<T>(fn: () => Promise<T>): Promise<T> {
+  const task = queue.then(async () => {
+    const release = await lockDesktop();
+    try {
+      return await fn();
     } finally {
       release();
     }

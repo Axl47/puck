@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { run } from "./exec.ts";
 import { assertOutputs } from "./scope.ts";
-import { type Output, type Window, keyboardGrab, outputs, withFocus } from "./umbriel.ts";
+import { type Output, type Window, keyboardGrab, outputs, withDesktopLock, withFocus } from "./umbriel.ts";
 
 // Pointer reading and input. Umbriel's IPC has neither, so both go through
 // helpers/wl.py, a small Wayland client (see its docstring).
@@ -59,7 +59,8 @@ export type PointerOp =
 export function moveOp(outs: readonly Output[], p: Point): PointerOp {
   if (!outputAt(outs, p)) throw new Error(`${p.x},${p.y} is on no output. Call desktop_state for output geometry.`);
   const b = layoutBounds(outs);
-  return { op: "move", x: Math.round(p.x - b.x), y: Math.round(p.y - b.y), width: b.width, height: b.height };
+  // Floor keeps the pixel on the output holding the point (rounding up at its edge would cross to the next).
+  return { op: "move", x: Math.floor(p.x - b.x), y: Math.floor(p.y - b.y), width: b.width, height: b.height };
 }
 
 /** Motion for a drag: press at `from`, glide in steps (apps ignore a single jump), release at `to`. */
@@ -87,27 +88,43 @@ export function clickOps(button: Button, count: number): PointerOp[] {
 
 const ProbeSchema = z.object({ output: z.string(), x: z.number(), y: z.number() });
 
-/** Where the pointer is, in global logical coordinates. Briefly maps an invisible overlay to ask the compositor. */
-export async function pointerPosition(outs?: readonly Output[]): Promise<Point & { output: string }> {
-  const [probe, all] = await Promise.all([run("python3", [helperPath("wl.py"), "position"]), outs ?? outputs()]);
-  const p = ProbeSchema.parse(JSON.parse(probe));
-  const o = all.find((o) => o.name === p.output);
+/** Probes the pointer position. The probe's overlay would take a click, so callers hold the desktop lock. */
+async function probePointer(outs: readonly Output[]): Promise<Point & { output: string }> {
+  const p = ProbeSchema.parse(JSON.parse(await run("python3", [helperPath("wl.py"), "position"])));
+  const o = outs.find((o) => o.name === p.output);
   if (!o) throw new Error(`The pointer is on ${p.output}, which Umbriel doesn't list.`);
   // Floor: the pixel the pointer is in; rounding up at an output's right edge would land on the next one.
   return { output: o.name, x: Math.floor(o.position.x + p.x), y: Math.floor(o.position.y + p.y) };
+}
+
+/** Where the pointer is, in global logical coordinates. Briefly maps an invisible overlay to ask the compositor. */
+export async function pointerPosition(outs?: readonly Output[]): Promise<Point & { output: string }> {
+  return withDesktopLock(async () => probePointer(outs ?? (await outputs())));
 }
 
 export async function pointerAct(ops: readonly PointerOp[]): Promise<void> {
   await run("python3", [helperPath("wl.py"), "act", JSON.stringify(ops)], { timeoutMs: 30_000 });
 }
 
+/** Throws unless every point is on an output PUCK_OUTPUTS allows. */
+function assertPoints(outs: readonly Output[], points: readonly Point[]) {
+  assertOutputs(
+    ...points.map((p) => {
+      const o = outputAt(outs, p);
+      if (!o) throw new Error(`${p.x},${p.y} is on no output.`);
+      return o.name;
+    }),
+  );
+}
+
 /** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). */
 export async function movePointer(p: Point): Promise<Point> {
-  const outs = await outputs();
-  const out = outputAt(outs, p);
-  if (out) assertOutputs(out.name);
-  await pointerAct([moveOp(outs, p)]);
-  return p;
+  return withDesktopLock(async () => {
+    const outs = await outputs();
+    assertPoints(outs, [p]);
+    await pointerAct([moveOp(outs, p)]);
+    return p;
+  });
 }
 
 /**
@@ -119,39 +136,37 @@ export async function movePointer(p: Point): Promise<Point> {
  * drag's end), which PUCK_OUTPUTS must allow too.
  */
 export async function pointerInput(at: Point | null, ops: readonly PointerOp[], also: readonly Point[] = []) {
-  let home: { outs: Output[]; at: Point } | undefined;
-  try {
-    return await withFocus(
-      async (focus) => {
-        const outs = await outputs();
-        const start = await pointerPosition(outs);
-        const target = at ?? start;
-        assertOutputs(
-          ...[target, ...also].map((p) => {
-            const o = outputAt(outs, p);
-            if (!o) throw new Error(`${p.x},${p.y} is on no output.`);
-            return o.name;
-          }),
+  // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
+  const outs = await outputs();
+  assertPoints(outs, [...(at ? [at] : []), ...also]);
+  const grab = await keyboardGrab();
+  if (grab) throw new Error(`A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.`);
+
+  let home: Point | undefined;
+  return withFocus(
+    async (focus) => {
+      const start = await probePointer(outs);
+      const target = at ? { x: Math.floor(at.x), y: Math.floor(at.y) } : start;
+      if (!at) assertPoints(outs, [start]);
+      home = start;
+      await pointerAct([moveOp(outs, target)]);
+      const landed = await probePointer(outs);
+      if (landed.x !== target.x || landed.y !== target.y) {
+        home = undefined; // leave the mouse to the user
+        throw new Error(
+          `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
         );
-        const grab = await keyboardGrab();
-        if (grab) throw new Error(`A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.`);
-        home = { outs, at: start };
-        await pointerAct([moveOp(outs, target)]);
-        const landed = await pointerPosition(outs);
-        if (Math.abs(landed.x - target.x) > 1 || Math.abs(landed.y - target.y) > 1) {
-          home = undefined; // leave the mouse to the user
-          throw new Error(
-            `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
-          );
-        }
-        await pointerAct(ops);
-        await focus.settle(); // a click focuses what it hit; withFocus then hands focus back
-        return { at: target };
+      }
+      await pointerAct(ops);
+      await focus.settle(); // a click focuses what it hit; withFocus then hands focus back
+      return { at: target };
+    },
+    {
+      restoreFocus: true,
+      // Focus restore warps the cursor onto the user's window; put it back where it was.
+      cleanup: async () => {
+        if (home) await pointerAct([moveOp(outs, home)]);
       },
-      { restoreFocus: true },
-    );
-  } finally {
-    // After withFocus, whose focus restore warps the cursor onto the user's window.
-    if (home) await pointerAct([moveOp(home.outs, home.at)]).catch(() => {});
-  }
+    },
+  );
 }

@@ -4,7 +4,8 @@
   a11y.py '<json request>'
 
 Request: {"pid": n, "title": s, "window": {x, y, width, height},
-          "point": {x, y} | null, "rect": {x, y, width, height} | null, "text": bool}
+          "point": {x, y} | null, "rect": {x, y, width, height} | null, "text": bool,
+          "clip": bool (keep only text inside rect)}
 in global logical coordinates, as Umbriel reports them.
 Prints {"found": bool, "url": s | null, "element": {...} | null, "text": s | null}.
 
@@ -44,6 +45,8 @@ class Tree:
         self.origin = (fx, fy)
         self.ui_scale = (window["width"] / fw if fw > 0 else 1, window["height"] / fh if fh > 0 else 1)
         self.visited = 0
+        self.clip = False
+        self.partial = False
         self.deadline = time.monotonic() + TIME_BUDGET
 
     def tick(self):
@@ -93,11 +96,35 @@ class Tree:
         return None
 
     def text_in(self, node, in_doc, rect, out, parent_text=""):
-        for child, child_doc, _ in self.children(node, in_doc, rect):
+        for child, child_doc, box in self.children(node, in_doc, rect):
             t = own_text(child)
+            if t and self.clip and box is not None and not inside(box, rect):
+                t = self.clipped(child, child_doc, box, rect, t)
             if t and t != parent_text:  # Chromium repeats a node's text in its inline text child
                 out.append(t)
             self.text_in(child, child_doc, rect, out, t or parent_text)
+
+    def clipped(self, node, in_doc, box, rect, whole):
+        """
+        The part of a node's text inside the rect: from the character at its
+        top-left to the one at its bottom-right (corners clamped to the node), in
+        reading order. All of it, flagged partial, when the app can't say.
+        (Atspi.Text.get_bounded_ranges would be exact but crashes libatspi.)
+        """
+        sx, sy = (1, 1) if in_doc else self.ui_scale
+        raw = lambda gx, gy: (
+            int(self.origin[0] + (gx - self.window["x"]) / sx),
+            int(self.origin[1] + (gy - self.window["y"]) / sy),
+        )
+        left, top = max(rect[0], box[0]), max(rect[1], box[1])
+        right, bottom = min(rect[0] + rect[2], box[0] + box[2]) - 1, min(rect[1] + rect[3], box[1] + box[3]) - 1
+        offset = lambda gx, gy: safe(lambda: Atspi.Text.get_offset_at_point(node, *raw(gx, gy), Atspi.CoordType.WINDOW), -1)
+        start, end = offset(left, top), offset(right, bottom)
+        if start < 0 or end < 0 or end < start:
+            self.partial = True
+            return whole
+        text = safe(lambda: Atspi.Text.get_text(node, start, end + 1), "") or ""
+        return " ".join(text.replace(OBJECT_CHAR, " ").split())
 
     def url(self):
         """The URL of the top-level showing web document, if the app exposes one."""
@@ -141,6 +168,10 @@ def intersects(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
+def inside(a, b):
+    return a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2] and a[1] + a[3] <= b[1] + b[3]
+
+
 def own_text(node):
     """Text the node holds itself; children's text comes from the children."""
     if not safe(node.get_text_iface):
@@ -168,15 +199,9 @@ def find_frame(req):
     return None
 
 
-def main():
-    req = json.loads(sys.argv[1])
-    Atspi.set_timeout(1000, 3000)
-    frame = find_frame(req)
-    result = {"found": frame is not None, "url": None, "element": None, "text": None}
-    if frame is None:
-        print(json.dumps(result))
-        return
+def read(frame, req, result):
     tree = Tree(frame, req["window"])
+    tree.clip = bool(req.get("clip"))
     try:
         result["url"] = tree.url()
         if req.get("point"):
@@ -199,8 +224,28 @@ def main():
                 tree.text_in(frame, False, (r["x"], r["y"], r["width"], r["height"]), out)
             finally:
                 result["text"] = "\n".join(out)
+                if tree.partial:
+                    result["partial"] = True
     except Budget:
         result["truncated"] = True
+
+
+def main():
+    req = json.loads(sys.argv[1])
+    Atspi.set_timeout(1000, 3000)
+    frame = find_frame(req)
+    result = {"found": frame is not None, "url": None, "element": None, "text": None}
+    if frame is None:
+        print(json.dumps(result))
+        return
+    # Chromium builds its tree only once an AT asks for attributes, and until then
+    # reports null children, which libatspi caches: ask, then re-read if empty.
+    safe(frame.get_attributes)
+    read(frame, req, result)
+    if not (result["url"] or result["element"] or result["text"]):
+        time.sleep(0.5)
+        safe(frame.clear_cache)
+        read(frame, req, result)
     print(json.dumps(result))
 
 
