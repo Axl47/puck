@@ -1,11 +1,16 @@
 import { z } from "zod";
 import { type CaptureTarget, capture, captureToFile } from "../capture.ts";
 import { TEXT_MODES, inspect } from "../inspect.ts";
+import { onScreen } from "../pointer.ts";
 import { notifications, shellState } from "../noctalia.ts";
 import { type Snapshot, findOutput, findWindow, snapshot } from "../umbriel.ts";
 import { type Register, json } from "./common.ts";
 
-/** The compact desktop view agents get: flags appear only when true. */
+/**
+ * The compact desktop view agents get: flags appear only when true. A window's
+ * `on_screen` is the part of it the user can see (null when none); `visible`
+ * is Umbriel's and stays true for scrolled-away columns.
+ */
 export function describeDesktop(snap: Snapshot, owned: ReadonlySet<string>) {
   const flag = (on: boolean, name: string) => (on ? { [name]: true } : {});
   return {
@@ -35,6 +40,9 @@ export function describeDesktop(snap: Snapshot, owned: ReadonlySet<string>) {
       app_id: w.app_id,
       title: w.title,
       workspace: w.workspace,
+      output: w.output,
+      workspace_active: snap.outputs.some((o) => o.name === w.output && o.active_workspace === w.workspace),
+      on_screen: onScreen(w, snap.outputs),
       x: w.x,
       y: w.y,
       width: w.w,
@@ -56,7 +64,7 @@ export const registerObserve: Register = (server, session) => {
     {
       title: "Desktop state",
       description:
-        "Outputs (monitors), workspaces, and every window with its id, app, title, workspace and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers). Flags such as visible, floating and fullscreen appear only when true. Call this first; other tools take these ids.",
+        "Outputs (monitors), workspaces, and every window with its id, app, title, workspace, output and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers). on_screen is the part of a window on its output while its workspace is shown (null when hidden or scrolled away); flags such as floating and fullscreen appear only when true. Call this first; other tools take these ids.",
       annotations: { readOnlyHint: true },
     },
     async () => {

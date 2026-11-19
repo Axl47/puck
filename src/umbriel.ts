@@ -80,16 +80,29 @@ export async function focusedWindow(): Promise<Window | null> {
   }
 }
 
-const LayerSchema = z.object({ namespace: z.string(), output: z.string(), mapped: z.boolean(), focused: z.boolean() });
+const LayerSchema = z.object({
+  namespace: z.string(),
+  output: z.string(),
+  pid: z.number(),
+  mapped: z.boolean(),
+  /** Holds the keyboard. */
+  focused: z.boolean(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number(),
+  h: z.number(),
+});
+export type Layer = z.infer<typeof LayerSchema>;
+
+/** Layer-shell surfaces: the shell's bar and panels, launchers, pickers such as slurp. */
+export const layers = async () => z.array(LayerSchema).parse(await inspect("layers"));
 
 /**
  * The shell surface (an open panel, launcher, lock screen) holding the
  * keyboard, if any. Meanwhile no window gets keys, though focused-window still
  * names one.
  */
-export async function keyboardGrab() {
-  return z.array(LayerSchema).parse(await inspect("layers")).find((l) => l.mapped && l.focused) ?? null;
-}
+export const keyboardGrab = async () => (await layers()).find((l) => l.mapped && l.focused) ?? null;
 
 /** Runs a compositor action, exactly as a keybind would. */
 export async function msg(action: string, ...args: string[]): Promise<void> {
@@ -186,6 +199,8 @@ export type Focus = {
   settle(): Promise<void>;
   /** The user took over (e.g. moved the mouse): leave focus and the cursor as they are. */
   abandon(): void;
+  /** A shell overlay still holds the keyboard: leave focus to it, but still run cleanup. */
+  leave(): void;
 };
 
 type FocusOptions = {
@@ -225,6 +240,7 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
 
       let expected = original?.id ?? null;
       let abandoned = false;
+      let left = false;
       const focus: Focus = {
         async on(id) {
           await msg("window-focus-warp", id);
@@ -248,6 +264,9 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
         abandon() {
           abandoned = true;
         },
+        leave() {
+          left = true;
+        },
       };
 
       try {
@@ -256,7 +275,7 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
         try {
           let tookOver = abandoned;
           try {
-            if (!abandoned) tookOver = !(await putBack(original?.id ?? null, before, expected, opts));
+            if (!abandoned && !left) tookOver = !(await putBack(original?.id ?? null, before, expected, opts));
           } finally {
             if (!tookOver) await opts.cleanup?.();
           }

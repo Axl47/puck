@@ -115,6 +115,13 @@ what it opened but can't close my Zed by accident.
   show.
 - `press_keys` refuses super chords; they are compositor shortcuts (close
   window, lock, switch workspace), not app input.
+- A picker overlay (slurp's `selection`) is sometimes exactly what an agent
+  means to drive. `overlay: "<namespace>"` on `click`, `drag`, `scroll` and
+  `press_keys` (`--overlay` on the CLI) allows input into that one namespace:
+  pointer input only if a mapped surface of it lies under every point and no
+  other surface has the keyboard; keys only if it has the keyboard and, under
+  `PUCK_OUTPUTS`, its client shows it on an allowed output. Without it, the
+  refusal stands.
 
 Pointer input is synthetic input like typing, so it sits in the invasive
 tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
@@ -134,12 +141,17 @@ probe needs to pass a shared-memory fd, which Node can't):
   per frame (apps drop or cap a single large step).
 
 `click`, `drag` and `scroll` first refuse targets outside `PUCK_OUTPUTS` and
-calls while a shell panel holds the keyboard (it would take the input). Then,
+calls while a shell panel holds the keyboard (it would take the input), unless
+it's the overlay the call names. Then,
 inside `withFocus` (desktop lock, focus-follows-mouse paused), they move to the
 target, check the pointer landed on exactly that pixel (a mismatch means the
 user is moving the mouse, so nothing is pressed), act, hand focus back and
 return the pointer to where it was, still under the lock (unless the user
-took over focus meanwhile). `pointer_move` takes
+took over focus meanwhile). Input into an overlay usually closes it, and
+Umbriel then focuses the window under the pointer; so Puck waits up to a second
+for the overlay to unmap and then hands focus back as usual. If it stays open,
+it keeps the keyboard and focus is left alone; the pointer goes back either
+way. `pointer_move` takes
 the lock, moves, and leaves the pointer there. Position probes take the lock
 too, so a probe's overlay can't catch another Puck's click.
 
@@ -153,22 +165,57 @@ Miranda's DESIGN.md specifies; fields may be added, never renamed or dropped.
   (fullscreen over floating over tiled, on the output there), or the bare
   output; a region through the window under its center.
 - Process start time and executable come from `/proc`.
+- Before reading, `inspect` makes sure AT-SPI is on (`org.a11y.Status
+  IsEnabled`, one D-Bus call), switching it on and saying so in `errors` when
+  it was off: it can be off despite the gsettings key, and Chromium-based
+  browsers only notice at launch.
 - `helpers/a11y.py` reads the window's AT-SPI tree (app by pid, frame by
   title): the URL of the showing web document (`DocURL` in Firefox, `URI` in
   Chromium), the deepest showing element under the point, and the text of
   showing nodes inside the target. Apps report extents relative to their
-  window, so boxes are offset by the frame's origin and, outside web documents,
-  scaled by window size / frame size (Chromium's UI reports at its own scale).
+  window, so boxes are offset by the frame's origin and scaled: outside web
+  documents by window size / frame size (Chromium's UI reports at its own
+  scale); inside, Firefox reports logical pixels and Chromium the output's
+  physical ones (its document is then wider than the window), divided by the
+  output scale.
   The walk stops after 6000 nodes or 4 s and says so in `errors`.
 - For a region, text of a node crossing its edge is cut to the characters
   between the region's corners (reading order); when the app can't place
   them, `auto` falls back to OCR. Chromium builds its tree only after an AT
   asks for attributes, so the helper asks first and re-reads once if empty.
 - `--text auto` uses accessibility text when it is non-blank and the target
-  lies within the window, OCR (`tesseract` on a native-resolution grim
-  capture) otherwise.
+  lies within the window, OCR otherwise (see OCR).
 - Failures that leave a partial answer (no accessibility tree, no pointer) are
   listed in an `errors` field rather than failing the call.
+
+### OCR
+
+`tesseract` reads a grim capture at the output's own pixels (PPM, so Puck can
+process it without an image library, `src/ocr.ts`):
+
+1. Grayscale, inverted when the background is dark: tesseract's models are
+   trained on dark text on light.
+2. Ruling lines painted out: components clearly darker than the paper, at
+   least three glyphs long, and sparse (a grid) or thin (a rule). Read as one
+   block (4), a table with its grid left in lost its cells entirely.
+3. Slashed zeros made plain: a glyph-sized component with one hole above
+   another and both outer sides unbroken between them (`8` and `B` pinch at
+   the waist, `@` nests its holes) loses everything between its sides.
+   Iosevka, foot's font here, slashes its zeros, and tesseract read them as
+   `@`, `8` or `B`.
+4. Terminal windows and anything with a ruled grid are read with `--psm 6`,
+   one block row by row. Tesseract's own layout analysis read them column by
+   column and garbled short lines; on pages it keeps columns apart, so it
+   stays the default elsewhere.
+5. `O` beside a digit in a word with two or more digits, and in `0x` literals,
+   becomes `0`.
+
+Each step was kept because it improved character error rate, intact lines or
+key tokens (error codes, hashes, hex) on a labelled set captured here: foot
+on the dark theme at 1.6 scale, a light web page, 12 px UI text, a two-column
+page and a bordered table, whole and as regions. Left out: upscaling,
+`tessdata_best` and `tessdata_fast` (no measurable gain), capturing at logical
+size (worse). A full terminal window reads in about 0.9 s.
 
 `PUCK_OUTPUTS=<output,…>` limits every mutating tool to those outputs and
 disables global changes (shell settings, notifications). Tests run with it set
@@ -199,7 +246,11 @@ The cursor ends up on the user's focused window, not where it was.
 ### Tool notes
 
 - `desktop_state` returns outputs, workspaces, windows and shell settings in
-  one compact call; window flags appear only when true.
+  one compact call; window flags appear only when true. Each window has its
+  `output`, `workspace_active`, and `on_screen`: its rectangle clipped to its
+  output, null when its workspace isn't shown, it's minimized or it sits in a
+  scrolled-away column. Umbriel keeps `visible` true for those columns, and
+  their rectangles lie off their output (even over another monitor).
 - `screenshot` takes an output, a window id (works on hidden workspaces) or a
   region, and returns a JPEG scaled to 1568 px; `full_res` saves a PNG.
 - `arrange_windows({ window_ids, output, layout: "split" | "master" })` moves
@@ -231,8 +282,10 @@ src/
   umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
   noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
   capture.ts     grim, scaled and encoded by grim itself
-  pointer.ts     pointer position and input, window under a point
+  pointer.ts     pointer position and input, window under a point, on-screen rects
+  keys.ts        key chords into a window or a shell overlay
   inspect.ts     inspect: window, process, accessibility, OCR
+  ocr.ts         image preparation for OCR
   apps.ts        desktop entry lookup
   arrange.ts     workspace choice for arrange_windows
   layout.ts      snapshots and restore
@@ -240,7 +293,7 @@ src/
   t3.ts          spend over T3's WebSocket RPC
   tools/         one file per tier
   server.ts      registers tiers from env, stdio transport
-  cli.ts         puck mcp | state | snapshot | restore | spend | inspect | pointer
+  cli.ts         puck mcp | state | snapshot | restore | spend | inspect | pointer | keys
 helpers/
   wl.py          Wayland client: pointer position probe, virtual pointer
   a11y.py        AT-SPI reader for inspect
@@ -254,8 +307,6 @@ command isn't installed, so the Mac ignores it.
 
 ### Known gaps
 
-- Chromium's page boxes are off by up to ~10 px (its reported origin doesn't
-  match its window geometry); Firefox's match.
 - `close_window`, `kill_window` and a `launch_app` without a target act by
   window id outside the desktop lock; they can still shift focus under another
   agent's sequence, which that sequence's focus checks then catch.
@@ -302,6 +353,11 @@ add puck path <repo>/plugin`) and placed first in the bar's right group in
 - **Pointer**: click, drag and scroll are checked live on the sandbox output
   against a test page that reports each event in its title, read back with
   `inspect` (`PUCK_OUTPUTS=PUCK-SBX` makes the CLI refuse other outputs).
+  Overlay input is checked against a real `slurp`, whose output shows what
+  it received.
+- **OCR**: changes are scored against the labelled set (character error rate,
+  intact lines, key tokens) before they are kept; unit tests hold a few real
+  captured rows (slashed zeros, look-alikes, a table grid).
 - **Not disturbing the session**: anything that moves, resizes or relayouts
   runs only on a virtual output. Read-only checks (listing, screenshots) may
   use the real outputs. Creating a virtual output makes Noctalia add a

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, parseRegion } from "./inspect.ts";
+import { pressKeys } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, movePointer, pointerInput } from "./pointer.ts";
 import { serveStdio } from "./server.ts";
@@ -20,12 +21,16 @@ const usage = `Usage: puck <command>
                    What is there: window, process, URL, accessible element, text
   pointer          What is under the pointer (inspect --pointer --text none)
   pointer move X,Y
-  pointer click [X,Y] [--button left|right|middle] [--count N]
-  pointer drag X,Y X,Y [--button …]
-  pointer scroll [X,Y] [--dx N] [--dy N]   (wheel steps; --dy=-3 scrolls up)
+  pointer click [X,Y] [--button left|right|middle] [--count N] [--overlay NS]
+  pointer drag X,Y X,Y [--button …] [--overlay NS]
+  pointer scroll [X,Y] [--dx N] [--dy N] [--overlay NS]   (wheel steps; --dy=-3 scrolls up)
                    Pointer input; click, drag and scroll put the pointer and focus back
+  keys (--window ID | --overlay NS) CHORD…
+                   Press key chords, e.g. ctrl+l Return, into a window or an overlay
 
-Coordinates are global logical pixels. PUCK_OUTPUTS limits pointer input to those outputs.`;
+Input is refused while a shell surface has the keyboard; --overlay NS sends it into
+that layer-shell namespace instead (selection for slurp), and only if it's open there.
+Coordinates are global logical pixels. PUCK_OUTPUTS limits input to those outputs.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
@@ -51,6 +56,9 @@ try {
       break;
     case "pointer":
       print(await pointerCommand(args));
+      break;
+    case "keys":
+      print(await keysCommand(args));
       break;
     case "spend":
       console.log(JSON.stringify(await spendToday()));
@@ -106,8 +114,10 @@ async function pointerCommand(argv: string[]) {
       count: { type: "string", default: "1" },
       dx: { type: "string", default: "0" },
       dy: { type: "string", default: "0" },
+      overlay: { type: "string" },
     },
   });
+  const opts = { overlay: values.overlay };
   const button: Button = oneOf(values.button, BUTTONS, "--button") ?? "left";
   const points = positionals.map(parsePoint);
   const int = (v: string, flag: string) => {
@@ -121,17 +131,29 @@ async function pointerCommand(argv: string[]) {
       return { moved_to: await movePointer(points[0]!) };
     case "click":
       const count = Math.min(Math.max(int(values.count, "--count"), 1), 3);
-      return pointerInput(points[0] ?? null, () => clickOps(button, count));
+      return pointerInput(points[0] ?? null, () => clickOps(button, count), opts);
     case "drag": {
       const [from, to] = points;
       if (!from || !to) throw new Error("pointer drag needs X,Y X,Y");
-      return pointerInput(from, (outs) => dragOps(outs, from, to, button));
+      return pointerInput(from, (outs) => dragOps(outs, from, to, button), opts);
     }
     case "scroll":
       const scroll = { op: "scroll", dx: int(values.dx, "--dx"), dy: int(values.dy, "--dy") } as const;
-      return pointerInput(points[0] ?? null, () => [scroll]);
+      return pointerInput(points[0] ?? null, () => [scroll], opts);
     default:
       throw new Error(`Unknown pointer action "${action}"; use move, click, drag or scroll.`);
   }
 }
 
+
+async function keysCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { window: { type: "string" }, overlay: { type: "string" } },
+  });
+  if (!positionals.length) throw new Error("keys needs at least one chord, e.g. Escape or ctrl+l");
+  if (values.window !== undefined && values.overlay === undefined) return pressKeys({ window: values.window }, positionals);
+  if (values.overlay !== undefined && values.window === undefined) return pressKeys({ overlay: values.overlay }, positionals);
+  throw new Error("keys needs exactly one of --window and --overlay");
+}

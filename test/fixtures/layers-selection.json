@@ -1,0 +1,155 @@
+[
+  {
+    "anchor": [
+      "top",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": 34,
+    "focused": false,
+    "h": 48,
+    "keyboard_interactivity": "none",
+    "layer": "top",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 67,
+      "right": 67,
+      "top": 0
+    },
+    "namespace": "noctalia-bar-default",
+    "output": "DP-2",
+    "pid": 51399,
+    "w": 1466,
+    "x": 1667,
+    "y": 0
+  },
+  {
+    "anchor": [
+      "top",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": 34,
+    "focused": false,
+    "h": 48,
+    "keyboard_interactivity": "none",
+    "layer": "top",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 67,
+      "right": 67,
+      "top": 0
+    },
+    "namespace": "noctalia-bar-default",
+    "output": "HDMI-A-1",
+    "pid": 51399,
+    "w": 1466,
+    "x": 67,
+    "y": 0
+  },
+  {
+    "anchor": [
+      "top",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": 34,
+    "focused": false,
+    "h": 48,
+    "keyboard_interactivity": "none",
+    "layer": "top",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 67,
+      "right": 67,
+      "top": 0
+    },
+    "namespace": "noctalia-bar-default",
+    "output": "PUCK-SBX",
+    "pid": 51399,
+    "w": 1466,
+    "x": 3267,
+    "y": 0
+  },
+  {
+    "anchor": [
+      "top",
+      "bottom",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": -1,
+    "focused": false,
+    "h": 900,
+    "keyboard_interactivity": "exclusive",
+    "layer": "overlay",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "namespace": "selection",
+    "output": "PUCK-SBX",
+    "pid": 970974,
+    "w": 1600,
+    "x": 3200,
+    "y": 0
+  },
+  {
+    "anchor": [
+      "top",
+      "bottom",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": -1,
+    "focused": false,
+    "h": 900,
+    "keyboard_interactivity": "exclusive",
+    "layer": "overlay",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "namespace": "selection",
+    "output": "HDMI-A-1",
+    "pid": 970974,
+    "w": 1600,
+    "x": 0,
+    "y": 0
+  },
+  {
+    "anchor": [
+      "top",
+      "bottom",
+      "left",
+      "right"
+    ],
+    "exclusive_zone": -1,
+    "focused": true,
+    "h": 900,
+    "keyboard_interactivity": "exclusive",
+    "layer": "overlay",
+    "mapped": true,
+    "margin": {
+      "bottom": 0,
+      "left": 0,
+      "right": 0,
+      "top": 0
+    },
+    "namespace": "selection",
+    "output": "DP-2",
+    "pid": 970974,
+    "w": 1600,
+    "x": 1600,
+    "y": 0
+  }
+]
