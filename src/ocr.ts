@@ -232,7 +232,13 @@ export function toInk(img: Pnm): { ink: Gray; blocks: number } {
         for (let k = 0; k < img.channels; k++) colour[k]! += img.data[i * img.channels + k]! / c.area;
       }
     }
+    // Closing could grow it out to a nearby image edge, so it stays within its bounding box.
     const foot = close(own, fw, fh, r);
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        if (x0 + x < c.x0 || x0 + x > c.x1 || y0 + y < c.y0 || y0 + y > c.y1) foot[y * fw + x] = 0;
+      }
+    }
     for (let y = 0; y < fh; y++) {
       for (let x = 0; x < fw; x++) {
         if (!foot[y * fw + x]) continue;

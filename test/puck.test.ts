@@ -387,6 +387,18 @@ describe("OCR preparation", () => {
     expect(textLike(ink, ...boxes)).toEqual([true, true, true]);
   });
 
+  it("keeps a block from spreading to a nearby edge", () => {
+    // A 24 px bar 5 px below the top, with a glyph in it, and a row of glyphs further down.
+    const width = 128;
+    const data = new Uint8Array(width * 100).fill(20);
+    data.fill(200, 5 * width, 29 * width);
+    for (let y = 11; y < 23; y++) data.fill(20, y * width + 24, y * width + 27);
+    for (let y = 45; y < 59; y++) for (const x of [10, 20, 30, 40, 50]) data.fill(255, y * width + x, y * width + x + 3);
+    const { ink, blocks } = toInk({ width, height: 100, channels: 1, data });
+    expect(blocks).toBe(1);
+    expect([ink.data[64], ink.data[4 * width + 64]]).toEqual([255, 255]); // the rows above it stay paper
+  });
+
   it("plains slashed zeros and nothing that looks like one", () => {
     expect(cleanForOcr(image("ocr-zeros"))).toMatchObject({ zeros: 2 }); // error[E0308]
     // BUILD 88B8 OK: 0x0B80 0xBEEF 0x8008 vitest@5.1.1 @types/node: seven zeros, and 8, B, @ kept
