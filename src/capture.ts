@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { runBinary } from "./exec.ts";
 import { stateDir } from "./paths.ts";
 
@@ -42,13 +42,12 @@ export async function capture(t: CaptureTarget): Promise<Capture> {
   return { data, mimeType: "image/jpeg", width: Math.round(t.width * d), height: Math.round(t.height * d) };
 }
 
-/** Full-resolution PNG saved under Puck's state dir; returns its path. */
-export async function captureToFile(t: CaptureTarget): Promise<string> {
+/** Full-resolution PNG saved at `path` (default: under Puck's state dir); returns its absolute path. */
+export async function captureToFile(t: CaptureTarget, path?: string): Promise<string> {
   const s = grimScale(t, captureDensity(t, true));
   const data = await runBinary("grim", [...grimArgs(t), "-s", s.toFixed(4), "-t", "png", "-"]);
-  const dir = join(stateDir(), "screenshots");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${t.kind}.png`);
-  writeFileSync(path, data);
-  return path;
+  const dest = resolve(path ?? join(stateDir(), "screenshots", `${new Date().toISOString().replace(/[:.]/g, "-")}-${t.kind}.png`));
+  mkdirSync(dirname(dest), { recursive: true });
+  writeFileSync(dest, data);
+  return dest;
 }

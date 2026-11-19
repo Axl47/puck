@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
-import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, snapshot, withFocus } from "../umbriel.ts";
+import { BUTTONS, clickOps, dragOps, movePointer, pointerInput } from "../pointer.ts";
+import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, outputs, snapshot, withFocus } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
 
 const MODIFIERS: Record<string, string> = {
@@ -189,4 +190,67 @@ export const registerInvasive: Register = (server, session) => {
         { restoreFocus: true },
       ),
   );
+
+  const point = z.object({ x: z.number(), y: z.number() });
+  const pointerNote = " Coordinates are global logical pixels, as desktop_state reports them. Afterwards the pointer and the user's focus go back where they were.";
+
+  server.registerTool(
+    "pointer_move",
+    {
+      title: "Move pointer",
+      description: "Move the pointer to a point and leave it there, for hover effects. Focus follows it if the desktop is set to focus follows mouse.",
+      inputSchema: point.shape,
+      annotations: { destructiveHint: false },
+    },
+    async (p) => json({ moved_to: await movePointer(p) }),
+  );
+
+  server.registerTool(
+    "click",
+    {
+      title: "Click",
+      description: "Click at a point (default: where the pointer is). count 2 double-clicks." + pointerNote,
+      inputSchema: {
+        x: z.number().optional(),
+        y: z.number().optional(),
+        button: z.enum(BUTTONS).default("left"),
+        count: z.number().int().min(1).max(3).default(1),
+      },
+      annotations: { destructiveHint: true },
+    },
+    async ({ x, y, button, count }) => json(await pointerInput(pointOrNull(x, y), clickOps(button, count))),
+  );
+
+  server.registerTool(
+    "drag",
+    {
+      title: "Drag",
+      description: "Press at one point, move to another, and release." + pointerNote,
+      inputSchema: { from: point, to: point, button: z.enum(BUTTONS).default("left") },
+      annotations: { destructiveHint: true },
+    },
+    async ({ from, to, button }) => json(await pointerInput(from, dragOps(await outputs(), from, to, button), [to])),
+  );
+
+  server.registerTool(
+    "scroll",
+    {
+      title: "Scroll",
+      description: "Turn the scroll wheel at a point (default: where the pointer is). dy > 0 scrolls down, dx > 0 right, in wheel steps." + pointerNote,
+      inputSchema: {
+        x: z.number().optional(),
+        y: z.number().optional(),
+        dx: z.number().int().min(-50).max(50).default(0),
+        dy: z.number().int().min(-50).max(50).default(0),
+      },
+      annotations: { destructiveHint: true },
+    },
+    async ({ x, y, dx, dy }) => json(await pointerInput(pointOrNull(x, y), [{ op: "scroll", dx, dy }])),
+  );
 };
+
+/** A point from optional coordinates: both or neither. */
+function pointOrNull(x: number | undefined, y: number | undefined) {
+  if ((x === undefined) !== (y === undefined)) throw new Error("Pass both x and y, or neither to use the pointer's position.");
+  return x === undefined || y === undefined ? null : { x, y };
+}

@@ -32,8 +32,10 @@ agent status on that desktop. It has two parts that share one repo:
 - `umbriel output-create/-destroy <name>` makes a **virtual output**. That is a
   sandbox screen agents can use without touching my monitors (see Testing).
 - Input: Umbriel implements wlr virtual-keyboard and virtual-pointer. `wtype`
-  (installed) types and presses keys. Pointer needs a small client (see
-  Invasive tier).
+  (installed) types and presses keys; pointer input goes through Puck's own
+  client (see Pointer). Absolute motion maps over the bounding box of all
+  outputs, even for a pointer bound to one output.
+- The IPC has no cursor-position query and no process start time.
 
 ### Screen capture
 
@@ -89,9 +91,9 @@ with a shell can run `umbriel msg` or `wtype` itself.
 
 | Tier | On by default | Tools |
 |---|---|---|
-| **Observe** | yes | `desktop_state`, `screenshot`, `notifications` |
+| **Observe** | yes | `desktop_state`, `screenshot`, `notifications`, `inspect` |
 | **Arrange** | yes | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` |
-| **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys` |
+| **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` |
 
 Arrange actions never destroy state; layout changes undo with a snapshot, and
 `shell_settings` returns the values it replaced. Invasive tools are
@@ -114,7 +116,52 @@ what it opened but can't close my Zed by accident.
 - `press_keys` refuses super chords; they are compositor shortcuts (close
   window, lock, switch workspace), not app input.
 
-Pointer input is out of v1.
+Pointer input is synthetic input like typing, so it sits in the invasive
+tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
+need no `PUCK_INVASIVE` (a script asks for them explicitly) but honour
+`PUCK_OUTPUTS`.
+
+### Pointer
+
+`helpers/wl.py` is a stdlib-only Wayland client (Python because the position
+probe needs to pass a shared-memory fd, which Node can't):
+
+- **Position**: maps a transparent overlay layer surface on every output for
+  ~20 ms and reads the `wl_pointer.enter` Umbriel sends to the one under the
+  cursor. The app under the cursor sees the pointer leave and come back, so a
+  hover-only menu can close.
+- **Input**: wlr virtual-pointer: absolute motion, buttons, one wheel detent
+  per frame (apps drop or cap a single large step).
+
+`click`, `drag` and `scroll` run inside `withFocus` (desktop lock,
+focus-follows-mouse paused), refuse while a shell panel holds the keyboard
+(it would take the input), move to the target, check the pointer landed there
+(a mismatch means the user is moving the mouse, so nothing is pressed), act,
+then hand focus back and return the pointer to where it was. `pointer_move`
+just moves and leaves it.
+
+### Inspect
+
+`inspect` (MCP) and `puck inspect … --json` (CLI) report what is at a region,
+a window, or a point (default: the pointer). The JSON shape is the one
+Miranda's DESIGN.md specifies; fields may be added, never renamed or dropped.
+
+- A point is inspected through the topmost visible window holding it
+  (fullscreen over floating over tiled, on the output there), or the bare
+  output; a region through the window under its center.
+- Process start time and executable come from `/proc`.
+- `helpers/a11y.py` reads the window's AT-SPI tree (app by pid, frame by
+  title): the URL of the showing web document (`DocURL` in Firefox, `URI` in
+  Chromium), the deepest showing element under the point, and the text of
+  showing nodes inside the target. Apps report extents relative to their
+  window, so boxes are offset by the frame's origin and, outside web documents,
+  scaled by window size / frame size (Chromium's UI reports at its own scale).
+  The walk stops after 6000 nodes or 4 s and says so in `errors`.
+- `--text auto` uses accessibility text when it is non-blank and the target
+  lies within the window, OCR (`tesseract` on a native-resolution grim
+  capture) otherwise.
+- Failures that leave a partial answer (no accessibility tree, no pointer) are
+  listed in an `errors` field rather than failing the call.
 
 `PUCK_OUTPUTS=<output,…>` limits every mutating tool to those outputs and
 disables global changes (shell settings, notifications). Tests run with it set
@@ -177,6 +224,8 @@ src/
   umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
   noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
   capture.ts     grim, scaled and encoded by grim itself
+  pointer.ts     pointer position and input, window under a point
+  inspect.ts     inspect: window, process, accessibility, OCR
   apps.ts        desktop entry lookup
   arrange.ts     workspace choice for arrange_windows
   layout.ts      snapshots and restore
@@ -184,7 +233,10 @@ src/
   t3.ts          spend over T3's WebSocket RPC
   tools/         one file per tier
   server.ts      registers tiers from env, stdio transport
-  cli.ts         puck mcp | state | snapshot | restore | spend
+  cli.ts         puck mcp | state | snapshot | restore | spend | inspect | pointer
+helpers/
+  wl.py          Wayland client: pointer position probe, virtual pointer
+  a11y.py        AT-SPI reader for inspect
 plugin/puck/     the Noctalia plugin
 ```
 
@@ -195,6 +247,8 @@ command isn't installed, so the Mac ignores it.
 
 ### Known gaps
 
+- Chromium's page boxes are off by up to ~10 px (its reported origin doesn't
+  match its window geometry); Firefox's match.
 - `close_window`, `kill_window` and a `launch_app` without a target act by
   window id outside the desktop lock; they can still shift focus under another
   agent's sequence, which that sequence's focus checks then catch.
@@ -238,6 +292,9 @@ add puck path <repo>/plugin`) and placed first in the bar's right group in
   windows and destroys it (an invisible output beside the monitors swallows the
   cursor). I check the result myself with `umbriel` and a screenshot of that
   output, keeping it up with `KEEP_SANDBOX=1`.
+- **Pointer**: click, drag and scroll are checked live on the sandbox output
+  against a test page that reports each event in its title, read back with
+  `inspect` (`PUCK_OUTPUTS=PUCK-SBX` makes the CLI refuse other outputs).
 - **Not disturbing the session**: anything that moves, resizes or relayouts
   runs only on a virtual output. Read-only checks (listing, screenshots) may
   use the real outputs. Creating a virtual output makes Noctalia add a
