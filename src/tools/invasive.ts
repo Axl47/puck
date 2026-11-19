@@ -229,7 +229,7 @@ export const registerInvasive: Register = (server, session) => {
       inputSchema: { from: point, to: point, button: z.enum(BUTTONS).default("left") },
       annotations: { destructiveHint: true },
     },
-    async ({ from, to, button }) => json(await pointerInput(from, dragOps(await outputs(), from, to, button), [to])),
+    async ({ from, to, button }) => json(await pointerInput(from, dragOps(await outputs(), from, to, button))),
   );
 
   server.registerTool(

@@ -108,7 +108,9 @@ class Tree:
         """
         The part of a node's text inside the rect: from the character at its
         top-left to the one at its bottom-right (corners clamped to the node), in
-        reading order. All of it, flagged partial, when the app can't say.
+        reading order. That span is only the rect's text when it sits on one line
+        or the rect spans the node's width; otherwise, or when the app can't
+        place the corners, all of it, flagged partial (auto then uses OCR).
         (Atspi.Text.get_bounded_ranges would be exact but crashes libatspi.)
         """
         sx, sy = (1, 1) if in_doc else self.ui_scale
@@ -120,11 +122,18 @@ class Tree:
         right, bottom = min(rect[0] + rect[2], box[0] + box[2]) - 1, min(rect[1] + rect[3], box[1] + box[3]) - 1
         offset = lambda gx, gy: safe(lambda: Atspi.Text.get_offset_at_point(node, *raw(gx, gy), Atspi.CoordType.WINDOW), -1)
         start, end = offset(left, top), offset(right, bottom)
-        if start < 0 or end < 0 or end < start:
+        spans_width = rect[0] <= box[0] and rect[0] + rect[2] >= box[0] + box[2]
+        if start < 0 or end < 0 or end < start or not (spans_width or self.one_line(node, start, end)):
             self.partial = True
             return whole
         text = safe(lambda: Atspi.Text.get_text(node, start, end + 1), "") or ""
         return " ".join(text.replace(OBJECT_CHAR, " ").split())
+
+    @staticmethod
+    def one_line(node, start, end):
+        first = safe(lambda: Atspi.Text.get_character_extents(node, start, Atspi.CoordType.WINDOW))
+        last = safe(lambda: Atspi.Text.get_character_extents(node, end, Atspi.CoordType.WINDOW))
+        return bool(first and last and abs(first.y - last.y) < max(first.height, 1) / 2)
 
     def url(self):
         """The URL of the top-level showing web document, if the app exposes one."""

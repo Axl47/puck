@@ -108,13 +108,12 @@ export async function pointerAct(ops: readonly PointerOp[]): Promise<void> {
 
 /** Throws unless every point is on an output PUCK_OUTPUTS allows. */
 function assertPoints(outs: readonly Output[], points: readonly Point[]) {
-  assertOutputs(
-    ...points.map((p) => {
-      const o = outputAt(outs, p);
-      if (!o) throw new Error(`${p.x},${p.y} is on no output.`);
-      return o.name;
-    }),
-  );
+  const names = points.map((p) => {
+    const o = outputAt(outs, p);
+    if (!o) throw new Error(`${p.x},${p.y} is on no output.`);
+    return o.name;
+  });
+  assertOutputs(...new Set(names));
 }
 
 /** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). */
@@ -132,13 +131,15 @@ export async function movePointer(p: Point): Promise<Point> {
  * user's focus and the pointer back. Holds the desktop lock with
  * focus-follows-mouse paused, refuses while a shell panel is open (it would take
  * the input), and checks the pointer landed before pressing anything, so a user
- * moving the mouse stops it. `also` lists other points the input reaches (a
- * drag's end), which PUCK_OUTPUTS must allow too.
+ * moving the mouse stops it. PUCK_OUTPUTS must allow every point the input
+ * reaches, a drag's glide included.
  */
-export async function pointerInput(at: Point | null, ops: readonly PointerOp[], also: readonly Point[] = []) {
+export async function pointerInput(at: Point | null, ops: readonly PointerOp[]) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
-  assertPoints(outs, [...(at ? [at] : []), ...also]);
+  const b = layoutBounds(outs);
+  const waypoints = ops.flatMap((o) => (o.op === "move" ? [{ x: o.x + b.x, y: o.y + b.y }] : [])); // e.g. a drag's glide
+  assertPoints(outs, [at ?? (await pointerPosition(outs)), ...waypoints]);
   const grab = await keyboardGrab();
   if (grab) throw new Error(`A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.`);
 
@@ -147,12 +148,13 @@ export async function pointerInput(at: Point | null, ops: readonly PointerOp[], 
     async (focus) => {
       const start = await probePointer(outs);
       const target = at ? { x: Math.floor(at.x), y: Math.floor(at.y) } : start;
-      if (!at) assertPoints(outs, [start]);
+      assertPoints(outs, [target]); // the pointer may have moved since the check above
       home = start;
       await pointerAct([moveOp(outs, target)]);
       const landed = await probePointer(outs);
       if (landed.x !== target.x || landed.y !== target.y) {
         home = undefined; // leave the mouse to the user
+        focus.abandon();
         throw new Error(
           `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
         );

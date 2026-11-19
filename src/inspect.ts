@@ -120,7 +120,8 @@ export function chooseTextSource(mode: TextMode, a11yText: string | null, target
   return targetInWindow && a11yText?.trim() ? "accessibility" : "ocr";
 }
 
-export type InspectOptions = { text: TextMode; screenshot?: string | undefined };
+/** `screenshot`: a path to save the target's PNG at, or true for a new file in Puck's screenshot dir. */
+export type InspectOptions = { text: TextMode; screenshot?: string | true | undefined };
 
 export async function inspect(target: InspectTarget, opts: InspectOptions) {
   const snap = await snapshot();
@@ -170,6 +171,7 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
       a11y = await readAccessibility(win, point, wantA11yText ? rect : null, target.kind === "region");
       if (!a11y.found) errors.push(`accessibility: ${win.app_id} isn't on the accessibility bus`);
       if (a11y.truncated) errors.push("accessibility: tree too large; text and element may be incomplete");
+      if (a11y.partial) errors.push("accessibility: text crossing the region's edge couldn't be cut to it and is included whole");
     } catch (err) {
       errors.push(`accessibility: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -189,17 +191,23 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
   };
   let screenshot: string | null = null;
   let content = source === "accessibility" ? (a11y?.text ?? "") : "";
-  if (opts.screenshot) screenshot = await captureToFile(capture, opts.screenshot).catch(failed("screenshot")) ?? null;
+  if (opts.screenshot) {
+    const path = opts.screenshot === true ? undefined : opts.screenshot;
+    screenshot = (await captureToFile(capture, path).catch(failed("screenshot"))) ?? null;
+  }
   if (source === "ocr") {
     if (screenshot) {
-      content = await ocr(screenshot).catch(failed("ocr")) ?? "";
+      content = (await ocr(screenshot).catch(failed("ocr"))) ?? "";
     } else {
-      const dir = mkdtempSync(join(tmpdir(), "puck-inspect-"));
-      try {
-        content = await captureToFile(capture, join(dir, "target.png")).then(ocr).catch(failed("ocr")) ?? "";
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+      const ocrTemp = async () => {
+        const dir = mkdtempSync(join(tmpdir(), "puck-inspect-"));
+        try {
+          return await ocr(await captureToFile(capture, join(dir, "target.png")));
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      };
+      content = (await ocrTemp().catch(failed("ocr"))) ?? "";
     }
   }
 

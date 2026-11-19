@@ -142,11 +142,11 @@ export const registerObserve: Register = (server, session) => {
         window_id: z.string().optional(),
         point: z.object({ x: z.number(), y: z.number() }).optional(),
         text: z.enum(TEXT_MODES).default("auto").describe("auto: accessibility, else OCR; none skips text"),
-        screenshot_path: z.string().optional().describe("Also save a full-resolution PNG of the target here"),
+        screenshot: z.boolean().default(false).describe("Also save a full-resolution PNG of the target and return its path"),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ region, window_id, point, text, screenshot_path }) => {
+    async ({ region, window_id, point, text, screenshot }) => {
       if ([region, window_id, point].filter((t) => t !== undefined).length > 1) {
         throw new Error("Pass at most one of region, window_id, point.");
       }
@@ -157,7 +157,7 @@ export const registerObserve: Register = (server, session) => {
           : point
             ? ({ kind: "point", point } as const)
             : ({ kind: "pointer" } as const);
-      return json(await inspect(target, { text, screenshot: screenshot_path }));
+      return json(await inspect(target, { text, screenshot: screenshot || undefined }));
     },
   );
 };

@@ -56,7 +56,7 @@ puck pointer drag X,Y X,Y [--button …]
 puck pointer scroll [X,Y] [--dx N] [--dy N]   # wheel steps; --dy=-3 scrolls up
 ```
 
-Coordinates are global logical pixels, as `puck state` reports them. Click, drag and scroll put the pointer and focus back afterwards.
+Coordinates are global logical pixels, as `puck state` reports them; write negative values as `--point=-10,20`, and put `--` before negative positionals. Click, drag and scroll put the pointer and focus back afterwards.
 
 ## Environment
 

@@ -124,7 +124,7 @@ async function pointerCommand(argv: string[]) {
     case "drag": {
       const [from, to] = points;
       if (!from || !to) throw new Error("pointer drag needs X,Y X,Y");
-      return pointerInput(from, dragOps(await outputs(), from, to, button), [to]);
+      return pointerInput(from, dragOps(await outputs(), from, to, button));
     }
     case "scroll":
       return pointerInput(points[0] ?? null, [{ op: "scroll", dx: int(values.dx, "--dx"), dy: int(values.dy, "--dy") }]);
