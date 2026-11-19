@@ -5,8 +5,11 @@
 /** An 8-bit grayscale image, row-major. */
 export type Gray = { width: number; height: number; data: Uint8Array };
 
-/** Parses a binary PPM (P6) or PGM (P5) with maxval 255, as grim writes them, into grayscale. */
-export function parsePnm(buf: Buffer): Gray {
+/** A decoded PNM: `channels` bytes per pixel (1 gray, 3 RGB), row-major. */
+export type Pnm = { width: number; height: number; channels: 1 | 3; data: Uint8Array };
+
+/** Parses a binary PPM (P6) or PGM (P5) with maxval 255, as grim writes them. */
+export function parsePnm(buf: Buffer): Pnm {
   // Header: magic, width, height, maxval, separated by whitespace (and `#` comments), then one whitespace byte.
   let pos = 0;
   const token = () => {
@@ -28,14 +31,7 @@ export function parsePnm(buf: Buffer): Gray {
   if (!channels || maxval !== 255 || !(width > 0 && height > 0) || buf.length < pos + width * height * channels) {
     throw new Error(`Unsupported image (${magic} ${width}x${height} maxval ${maxval}).`);
   }
-  const data = new Uint8Array(width * height);
-  if (channels === 1) data.set(buf.subarray(pos, pos + data.length));
-  else {
-    for (let i = 0, p = pos; i < data.length; i++, p += 3) {
-      data[i] = (buf[p]! * 299 + buf[p + 1]! * 587 + buf[p + 2]! * 114 + 500) / 1000; // Rec. 601 luma
-    }
-  }
-  return { width, height, data };
+  return { width, height, channels, data: new Uint8Array(buf.subarray(pos, pos + width * height * channels)) };
 }
 
 export const toPgm = (img: Gray) => Buffer.concat([Buffer.from(`P5\n${img.width} ${img.height}\n255\n`), img.data]);
@@ -65,29 +61,20 @@ export function otsu(img: Gray): number {
   return best;
 }
 
-/**
- * Makes text dark on a light background (tesseract's models are trained on
- * that), judging by which side of the threshold most pixels fall: the
- * background. Returns whether it inverted.
- */
-export function darkOnLight(img: Gray): boolean {
-  const t = otsu(img);
-  let dark = 0;
-  for (const v of img.data) if (v <= t) dark++;
-  if (dark <= img.data.length / 2) return false;
-  for (let i = 0; i < img.data.length; i++) img.data[i] = 255 - img.data[i]!;
-  return true;
-}
-
 type Comp = { area: number; x0: number; y0: number; x1: number; y1: number; border: boolean };
 
-/** Connected components of `mask` (8-connected when `diagonal`). Labels start at 1; 0 is outside the mask. */
-function label(mask: Uint8Array, width: number, height: number, diagonal: boolean) {
-  const labels = new Int32Array(mask.length);
-  const stack = new Int32Array(mask.length);
+/**
+ * Connected components (8-connected when `diagonal`): pixel `j` joins the
+ * component started at pixel `seed` when `joins(seed, j)`, and starts one when
+ * `joins(j, j)`. Labels start at 1; 0 is outside every component.
+ */
+function label(width: number, height: number, diagonal: boolean, joins: (seed: number, j: number) => boolean) {
+  const size = width * height;
+  const labels = new Int32Array(size);
+  const stack = new Int32Array(size);
   const comps: Comp[] = [{ area: 0, x0: 0, y0: 0, x1: 0, y1: 0, border: false }];
-  for (let start = 0; start < mask.length; start++) {
-    if (!mask[start] || labels[start]) continue;
+  for (let start = 0; start < size; start++) {
+    if (labels[start] || !joins(start, start)) continue;
     const id = comps.length;
     const c: Comp = { area: 0, x0: width, y0: height, x1: -1, y1: -1, border: false };
     comps.push(c);
@@ -111,7 +98,7 @@ function label(mask: Uint8Array, width: number, height: number, diagonal: boolea
           const ny = y + dy;
           if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
           const j = ny * width + nx;
-          if (mask[j] && !labels[j]) {
+          if (!labels[j] && joins(start, j)) {
             labels[j] = id;
             stack[top++] = j;
           }
@@ -120,6 +107,103 @@ function label(mask: Uint8Array, width: number, height: number, diagonal: boolea
     }
   }
   return { labels, comps };
+}
+
+/** Glyph scale: the median height of components that look like characters (0 when there are none). */
+function glyphHeight(comps: Comp[]): number {
+  const heights = comps
+    .slice(1)
+    .filter((c) => c.area >= 4)
+    .map((c) => c.y1 - c.y0 + 1)
+    .sort((a, b) => a - b);
+  return heights[heights.length >> 1] ?? 0;
+}
+
+/** Chebyshev distance between the colour of pixel `i` and `colour`: the largest difference in any channel. */
+function distance(img: Pnm, i: number, colour: readonly number[]): number {
+  let d = 0;
+  for (let k = 0, p = i * img.channels; k < img.channels; k++, p++) d = Math.max(d, Math.abs(img.data[p]! - colour[k]!));
+  return d;
+}
+
+/** The commonest colour within the rectangle, to 4 bits a channel, as the mean of the pixels in that bin. */
+function dominant(img: Pnm, x0: number, y0: number, x1: number, y1: number): number[] {
+  const { width, channels: ch, data } = img;
+  const bin = (i: number) => {
+    let key = 0;
+    for (let k = 0; k < ch; k++) key = (key << 4) | (data[i * ch + k]! >> 4);
+    return key;
+  };
+  const counts = new Uint32Array(1 << (4 * ch));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) counts[bin(y * width + x)]!++;
+  const best = counts.indexOf(Math.max(...counts));
+  const sum = new Array<number>(ch).fill(0);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (bin(i) === best) for (let k = 0; k < ch; k++) sum[k]! += data[i * ch + k]!;
+    }
+  }
+  return sum.map((v) => v / counts[best]!);
+}
+
+
+/**
+ * Turns a capture into dark text on white, whatever the colours: each pixel's
+ * darkness is its distance from the background colour (the commonest one),
+ * so red or blue text on a dark theme becomes as dark as white text does.
+ * Thresholding luma instead dropped foot's red (luma 113 on a background of
+ * 37) from a fullscreen terminal, where the threshold rose past it.
+ *
+ * Solid blocks of another colour (a status bar, a selection, inverse video)
+ * would come out as dark slabs hiding their text, so inside each one the
+ * distance is taken from the block's own colour instead. Returns the image and
+ * how many blocks it found.
+ */
+export function toInk(img: Pnm): { ink: Gray; blocks: number } {
+  const { width, height } = img;
+  // Darkness grows twice as fast as the distance, past a floor that absorbs the wallpaper showing
+  // through a translucent terminal: the best of the gains and floors tried on the labelled set.
+  const gain = 2;
+  const floor = 10;
+  const data = new Uint8Array(width * height);
+  const paint = (x0: number, y0: number, x1: number, y1: number, colour: readonly number[]) => {
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = y * width + x;
+        data[i] = 255 - Math.min(255, Math.round(Math.max(0, distance(img, i, colour) - floor) * gain));
+      }
+    }
+  };
+  const paper = dominant(img, 0, 0, width - 1, height - 1);
+  paint(0, 0, width - 1, height - 1, paper);
+  const ink = { width, height, data };
+
+  const t = otsu(ink);
+  const glyph = glyphHeight(label(width, height, true, (_, j) => data[j]! <= t).comps);
+  if (!glyph) return { ink, blocks: 0 };
+  // Blocks: regions of one colour, away from the paper's, at least a glyph tall and two wide, and
+  // mostly filled (their text makes the holes).
+  const same = 24;
+  const colours = label(width, height, false, (seed, j) => {
+    if (distance(img, j, paper) <= same) return false;
+    for (let k = 0, p = seed * img.channels, q = j * img.channels; k < img.channels; k++, p++, q++) {
+      if (Math.abs(img.data[p]! - img.data[q]!) > same) return false;
+    }
+    return true;
+  });
+  let blocks = 0;
+  for (const c of colours.comps.slice(1)) {
+    const w = c.x1 - c.x0 + 1;
+    const h = c.y1 - c.y0 + 1;
+    if (h < glyph || w < glyph * 2 || c.area < w * h * 0.4) continue;
+    paint(c.x0, c.y0, c.x1, c.y1, dominant(img, c.x0, c.y0, c.x1, c.y1));
+    // Its antialiased edge would read as a frame.
+    for (let x = c.x0; x <= c.x1; x++) data[c.y0 * width + x] = data[c.y1 * width + x] = 255;
+    for (let y = c.y0; y <= c.y1; y++) data[y * width + c.x0] = data[y * width + c.x1] = 255;
+    blocks++;
+  }
+  return { ink, blocks };
 }
 
 /**
@@ -143,16 +227,11 @@ export function cleanForOcr(img: Gray): { grid: boolean; rules: number; zeros: n
   const fgMask = new Uint8Array(data.length);
   const bgMask = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) (data[i]! <= t ? fgMask : bgMask)[i] = 1;
-  const fg = label(fgMask, width, height, true);
-  const bg = label(bgMask, width, height, false);
+  const fg = label(width, height, true, (_, j) => fgMask[j] === 1);
+  const bg = label(width, height, false, (_, j) => bgMask[j] === 1);
 
   // Glyph scale: the median height of foreground components that look like characters.
-  const heights = fg.comps
-    .slice(1)
-    .filter((c) => c.area >= 4)
-    .map((c) => c.y1 - c.y0 + 1)
-    .sort((a, b) => a - b);
-  const glyph = heights[heights.length >> 1] ?? 0;
+  const glyph = glyphHeight(fg.comps);
   if (!glyph) return { grid: false, rules: 0, zeros: 0 };
   const glyphSized = (c: Comp) => c.y1 - c.y0 + 1 <= glyph * 2.5 && c.x1 - c.x0 + 1 <= glyph * 2.5;
   const clear = new Uint8Array(data.length); // pixels to paint as background
@@ -165,7 +244,7 @@ export function cleanForOcr(img: Gray): { grid: boolean; rules: number; zeros: n
   // line). Grids are often lighter than text, so here ink is anything clearly darker than the paper.
   const inkMask = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) inkMask[i] = data[i]! < paper - 40 ? 1 : 0;
-  const ink = label(inkMask, width, height, true);
+  const ink = label(width, height, true, (_, j) => inkMask[j] === 1);
   const rule = new Uint8Array(ink.comps.length);
   let rules = 0;
   let grid = false;

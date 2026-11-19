@@ -193,8 +193,14 @@ Miranda's DESIGN.md specifies; fields may be added, never renamed or dropped.
 `tesseract` reads a grim capture at the output's own pixels (PPM, so Puck can
 process it without an image library, `src/ocr.ts`):
 
-1. Grayscale, inverted when the background is dark: tesseract's models are
-   trained on dark text on light.
+1. Dark text on white (what tesseract's models are trained on), whatever the
+   colours: each pixel's darkness is its colour's distance from the
+   background's (the commonest colour), doubled, past a floor of 10 that
+   absorbs wallpaper behind a translucent terminal. Luma with Otsu put foot's
+   red (113, on a background of 37) on the background's side once the
+   threshold rose, as in a fullscreen terminal: gcc's `error:` vanished.
+   Solid blocks of another colour (status bars, selections, inverse video,
+   badges) are inked against their own colour, or they'd read as slabs.
 2. Ruling lines painted out: components clearly darker than the paper, at
    least three glyphs long, and sparse (a grid) or thin (a rule). Read as one
    block (4), a table with its grid left in lost its cells entirely.
@@ -213,9 +219,11 @@ process it without an image library, `src/ocr.ts`):
 Each step was kept because it improved character error rate, intact lines or
 key tokens (error codes, hashes, hex) on a labelled set captured here: foot
 on the dark theme at 1.6 scale, a light web page, 12 px UI text, a two-column
-page and a bordered table, whole and as regions. Left out: upscaling,
+page and a bordered table, whole and as regions; and in foot, windowed and
+fullscreen, gcc and rustc errors, `ls`, `git diff` and `grep` in colour, and
+coloured backgrounds (a status bar, a selection, badges, inverse video). Left out: upscaling,
 `tessdata_best` and `tessdata_fast` (no measurable gain), capturing at logical
-size (worse). A full terminal window reads in about 0.9 s.
+size (worse). A full terminal window reads in about 1 s.
 
 `PUCK_OUTPUTS=<output,…>` limits every mutating tool to those outputs and
 disables global changes (shell settings, notifications). Tests run with it set
@@ -357,7 +365,8 @@ add puck path <repo>/plugin`) and placed first in the bar's right group in
   it received.
 - **OCR**: changes are scored against the labelled set (character error rate,
   intact lines, key tokens) before they are kept; unit tests hold a few real
-  captured rows (slashed zeros, look-alikes, a table grid).
+  captured rows (slashed zeros, look-alikes, a table grid, gcc's red error,
+  coloured blocks).
 - **Not disturbing the session**: anything that moves, resizes or relayouts
   runs only on a virtual output. Read-only checks (listing, screenshots) may
   use the real outputs. Creating a virtual output makes Noctalia add a

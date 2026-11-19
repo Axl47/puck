@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { type CaptureTarget, captureNative, captureToFile } from "./capture.ts";
 import { run } from "./exec.ts";
-import { cleanForOcr, darkOnLight, digitZeros, parsePnm, toPgm } from "./ocr.ts";
+import { cleanForOcr, digitZeros, parsePnm, toInk, toPgm } from "./ocr.ts";
 import {
   type Point,
   type Rect,
@@ -112,17 +112,16 @@ async function readAccessibility(w: Window, scale: number, point: Point | null, 
 }
 
 /**
- * OCR of the target at the output's native pixels: grayscale, dark text on
- * light, ruling lines and zero slashes painted over, then `O` beside digits
- * read as zero. A terminal's screen, or anything holding a ruled grid (a
+ * OCR of the target at the output's native pixels: each pixel inked by its
+ * colour's distance from the background (so coloured text counts), ruling
+ * lines and zero slashes painted over, then `O` beside digits read as zero. A terminal's screen, or anything holding a ruled grid (a
  * table), is read as one block, row by row: tesseract's own page layout reads
  * their columns one after another and garbles short lines (`line 1`…`line 9`).
  * Otherwise tesseract finds the layout, so a page's columns stay apart. Each
  * step measurably helped on captures from this machine (DESIGN.md, "OCR").
  */
 async function ocr(target: CaptureTarget, terminal: boolean): Promise<string> {
-  const img = parsePnm(await captureNative(target, "ppm"));
-  darkOnLight(img);
+  const { ink: img } = toInk(parsePnm(await captureNative(target, "ppm")));
   const { grid } = cleanForOcr(img);
   const block = terminal || grid;
   const dir = mkdtempSync(join(tmpdir(), "puck-ocr-"));
