@@ -1,6 +1,6 @@
 --!nonstrict
 -- Bar widget: one glyph + count per non-empty state, then today's spend.
---   running threads · threads waiting on you · finished, unreviewed threads ·
+--   threads waiting on you · running threads · finished, unreviewed threads ·
 --   open PRs (red when checks fail) · $ today
 -- Click opens the threads panel.
 
@@ -57,7 +57,7 @@ local function render()
       end
     end
   end
-  if type(spend) == "number" and spend > 0 then
+  if type(spend) == "number" and spend >= 0.5 then
     table.insert(items, ui.label({ text = string.format("$%.0f", spend), color = "on_surface_variant" }))
     table.insert(tips, string.format("$%.2f today", spend))
   end

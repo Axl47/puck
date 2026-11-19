@@ -1,13 +1,15 @@
 --!nonstrict
 -- Headless poller. Every 5 s it reads T3's thread snapshot and publishes a
 -- summary as noctalia.state "status"; once a minute it asks `puck spend` for
--- today's spend and publishes it as "spend". The widget and panel only render.
+-- today's spend and publishes it as "spend" (false when unknown, so a stale
+-- figure never shows). The widget and panel only render.
 
 local POLL_MS = 5000
 local SPEND_EVERY = 12 -- polls between spend refreshes (one minute)
 
 local home = noctalia.getenv("HOME") or ""
-local tokenPath = home .. "/.config/puck/t3-token"
+local configHome = noctalia.getenv("XDG_CONFIG_HOME") or (home .. "/.config")
+local tokenPath = configHome .. "/puck/t3-token"
 local runtimePath = home .. "/.t3/userdata/server-runtime.json"
 
 -- Statuses T3 counts as an active run.
@@ -16,7 +18,8 @@ local ACTIVE = { queued = true, preparing = true, starting = true, running = tru
 local FINISHED = { completed = true, failed = true, interrupted = true, cancelled = true }
 
 local polls = 0
-local inFlight = false
+local inFlightSince = nil -- poll count when the pending request started
+local STALL_POLLS = 6 -- a request with no answer after 30 s is abandoned
 
 -- JSON nulls may decode to a sentinel; treat anything that isn't a string as absent.
 local function present(v)
@@ -41,24 +44,29 @@ local function projectNames(shell)
   return names
 end
 
--- Reduces T3's shell snapshot to what the bar shows. Pure; exported via state.
+-- Reduces T3's shell snapshot to what the bar shows. Running and review count
+-- top-level threads only (a subagent's run is its parent's), but any thread
+-- waiting on the user counts, and PRs count once each wherever they're linked.
 local function summarize(shell)
   local names = projectNames(shell)
   local s = { running = {}, waiting = {}, review = {}, failing = {}, prs = { open = 0, failing = 0, pending = 0 } }
+  local seenPrs = {}
   for _, t in ipairs(shell.threads or {}) do
-    local topLevel = not (type(t.lineage) == "table" and present(t.lineage.parentThreadId))
-    if topLevel and not present(t.archivedAt) and not present(t.deletedAt) then
+    if not present(t.archivedAt) and not present(t.deletedAt) then
+      local topLevel = not (type(t.lineage) == "table" and present(t.lineage.parentThreadId))
       local item = { title = t.title or "Untitled", project = names[t.projectId] or "" }
       if type(t.pendingRuntimeRequest) == "table" then
         table.insert(s.waiting, item)
-      elseif ACTIVE[t.status] then
+      elseif topLevel and ACTIVE[t.status] then
         table.insert(s.running, item)
-      elseif FINISHED[t.status] and not present(t.settledAt) and not present(t.snoozedAt) then
+      elseif topLevel and FINISHED[t.status] and not present(t.settledAt) and not present(t.snoozedAt) then
         table.insert(s.review, item)
       end
       for _, pr in ipairs(t.pullRequests or {}) do
         local snap = pr.snapshot
-        if type(snap) == "table" and snap.state == "open" then
+        local key = tostring(pr.repository) .. "#" .. tostring(pr.number)
+        if type(snap) == "table" and snap.state == "open" and not seenPrs[key] then
+          seenPrs[key] = true
           s.prs.open += 1
           if snap.checksState == "failing" then
             s.prs.failing += 1
@@ -75,13 +83,14 @@ local function summarize(shell)
 end
 
 local function pollThreads()
-  if inFlight then return end
+  if inFlightSince and polls - inFlightSince < STALL_POLLS then return end
   local token = noctalia.readFile(tokenPath)
   if not token then
     noctalia.state.set("status", { ok = false, error = "No T3 token at ~/.config/puck/t3-token" })
     return
   end
-  inFlight = true
+  local started = polls
+  inFlightSince = started
   noctalia.http({
     url = origin() .. "/api/orchestration/shell?omitIdleSubagents=1&omitOlderSettled=1",
     method = "GET",
@@ -91,7 +100,8 @@ local function pollThreads()
       "Accept: application/json",
     },
   }, function(res)
-    inFlight = false
+    if inFlightSince ~= started then return end -- abandoned as stalled; a newer request owns the state
+    inFlightSince = nil
     if not res or not res.ok or res.status ~= 200 then
       local status = res and res.status or 0
       noctalia.state.set("status", { ok = false, error = status == 401 and "T3 rejected the token" or "T3 is not reachable" })
@@ -100,17 +110,16 @@ local function pollThreads()
     local shell = noctalia.json.decode(res.body)
     if type(shell) == "table" then
       noctalia.state.set("status", summarize(shell))
+    else
+      noctalia.state.set("status", { ok = false, error = "T3 sent an unreadable reply" })
     end
   end)
 end
 
 local function pollSpend()
   noctalia.runAsync({ "puck", "spend" }, function(result)
-    if not result or result.exitCode ~= 0 then return end
-    local spend = noctalia.json.decode(result.stdout or "")
-    if type(spend) == "table" and type(spend.usd) == "number" then
-      noctalia.state.set("spend", spend.usd)
-    end
+    local spend = result and result.exitCode == 0 and noctalia.json.decode(result.stdout or "")
+    noctalia.state.set("spend", type(spend) == "table" and type(spend.usd) == "number" and spend.usd or false)
   end)
 end
 
