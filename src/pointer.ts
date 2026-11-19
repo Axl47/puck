@@ -218,6 +218,13 @@ export async function pointerInput(
         focus.abandon(); // nothing was done; don't warp the cursor
         throw err;
       }
+      // Again under the lock and at the exact target, before the last pointer probe:
+      // another Puck may have closed the overlay meanwhile.
+      const late = inputRefusal(await layers(), opts.overlay, [target, ...waypoints]);
+      if (late) {
+        focus.abandon(); // nothing was done
+        throw new Error(late);
+      }
       home = start;
       await pointerAct([moveOp(outs, target)]);
       const landed = await probePointer(outs);
@@ -227,12 +234,6 @@ export async function pointerInput(
         throw new Error(
           `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
         );
-      }
-      // Again under the lock and at the exact target: another Puck may have closed the overlay meanwhile.
-      const late = inputRefusal(await layers(), opts.overlay, [target, ...waypoints]);
-      if (late) {
-        focus.leave(); // nothing was pressed; just put the pointer back
-        throw new Error(late);
       }
       await pointerAct(ops);
       if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard
