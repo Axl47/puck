@@ -227,4 +227,5 @@ add puck path <repo>/plugin`) and placed first in the bar's right group in
 - **Not disturbing the session**: anything that moves, resizes or relayouts
   runs only on a virtual output. Read-only checks (listing, screenshots) may
   use the real outputs. Creating a virtual output makes Noctalia add a
-  lock-screen widget entry for it to `settings.toml`; remove it afterwards.
+  lock-screen widget entry for it to `settings.toml`; the test script removes
+  it with the output.

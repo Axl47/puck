@@ -26,6 +26,15 @@ cleanup() {
   umbriel windows --json | jq -e --arg o "$sbx" 'any(.output == $o)' >/dev/null &&
     echo "windows still open on $sbx; left it up" >&2 && return
   umbriel output-destroy "$sbx"
+  # Noctalia adds a lock-screen widget entry for every output it sees; drop the sandbox's.
+  python3 - "${XDG_STATE_HOME:-$HOME/.local/state}/noctalia/settings.toml" "$sbx" <<'PY'
+import re, sys
+path, out = sys.argv[1], re.escape(sys.argv[2])
+s = open(path).read()
+s = re.sub(rf'    "lockscreen-login-box@{out}",\n', "", s)
+s = re.sub(rf'    \[lockscreen_widgets\.widget\."lockscreen-login-box@{out}"\]\n.*?(?=\n    \[lockscreen_widgets\.widget\."lockscreen-login-box@(?!{out}")|\n\[)', "", s, flags=re.S)
+open(path, "w").write(re.sub(r"\n\n\n+", "\n\n", s))
+PY
 }
 trap cleanup EXIT
 jq -n --arg cmd "$(command -v puck)" --arg o "$sbx" '{mcpServers: {puck: {command: $cmd, args: ["mcp"], env: {PUCK_OUTPUTS: $o, PUCK_INVASIVE: "1"}}}}' >"$config"
