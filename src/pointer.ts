@@ -31,14 +31,12 @@ export function intersect(a: Rect, b: Rect): Rect | null {
 
 /**
  * The part of a window actually on screen: its rectangle clipped to its own
- * output, or null when its workspace isn't the one shown there, it's minimized,
- * or it lies off the output (a scrolled-away column). Umbriel's `visible` stays
- * true for scrolled-away columns, so callers drawing windows use this.
+ * output, or null when it's hidden or minimized or lies off the output (a
+ * scrolled-away column, for which Umbriel's `visible` stays true).
  */
 export function onScreen(w: Window, outs: readonly Output[]): Rect | null {
   const out = outs.find((o) => o.enabled && o.name === w.output);
-  if (!out || out.active_workspace !== w.workspace || w.minimized || w.scratchpad !== "") return null;
-  return intersect(windowRect(w), outputRect(out));
+  return out && w.visible && !w.minimized ? intersect(windowRect(w), outputRect(out)) : null;
 }
 
 /** The enabled output a point is on, if any. */
@@ -163,13 +161,14 @@ const layerRect = (l: Layer): Rect => ({ x: l.x, y: l.y, width: l.w, height: l.h
  * default a shell surface holding the keyboard (launcher, panel, picker) would
  * take the input meant for a window, so it refuses. `overlay` names the
  * layer-shell namespace the caller means to click into (`selection` for slurp):
- * then a different surface holding the keyboard still refuses, and every point
- * must be on a mapped surface of that namespace.
+ * then that overlay must hold the keyboard, and every point must be on a mapped
+ * surface of it.
  */
 export function inputRefusal(all: readonly Layer[], overlay: string | undefined, points: readonly Point[]): string | null {
   const grab = all.find((l) => l.mapped && l.focused);
   if (!overlay) return grab ? `A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.` : null;
-  if (grab && grab.namespace !== overlay) return `${grab.namespace} has the keyboard, not ${overlay}; nothing was sent.`;
+  if (!grab) return `No shell surface has the keyboard, so no ${overlay} overlay is waiting for input; nothing was sent.`;
+  if (grab.namespace !== overlay) return `${grab.namespace} has the keyboard, not ${overlay}; nothing was sent.`;
   const surfaces = all.filter((l) => l.mapped && l.namespace === overlay);
   if (!surfaces.length) return `No ${overlay} overlay is open; nothing was sent.`;
   const off = points.find((p) => !surfaces.some((l) => contains(layerRect(l), p)));
@@ -203,6 +202,10 @@ export async function pointerInput(
   assertPoints(outs, points);
   const refusal = inputRefusal(await layers(), opts.overlay, points);
   if (refusal) throw new Error(refusal);
+  // The first click usually closes a picker; a second would land on the window beneath.
+  if (opts.overlay && ops.filter((o) => o.op === "button" && o.state === "press").length > 1) {
+    throw new Error("Into an overlay, click once per call; nothing was sent.");
+  }
 
   let home: Point | undefined;
   return withFocus(
@@ -224,6 +227,12 @@ export async function pointerInput(
         throw new Error(
           `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
         );
+      }
+      // Again under the lock and at the exact target: another Puck may have closed the overlay meanwhile.
+      const late = inputRefusal(await layers(), opts.overlay, [target, ...waypoints]);
+      if (late) {
+        focus.leave(); // nothing was pressed; just put the pointer back
+        throw new Error(late);
       }
       await pointerAct(ops);
       if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard

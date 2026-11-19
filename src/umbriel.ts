@@ -102,7 +102,7 @@ export const layers = async () => z.array(LayerSchema).parse(await inspect("laye
  * keyboard, if any. Meanwhile no window gets keys, though focused-window still
  * names one.
  */
-export const keyboardGrab = async (all?: readonly Layer[]) => (all ?? (await layers())).find((l) => l.mapped && l.focused) ?? null;
+export const keyboardGrab = async () => (await layers()).find((l) => l.mapped && l.focused) ?? null;
 
 /** Runs a compositor action, exactly as a keybind would. */
 export async function msg(action: string, ...args: string[]): Promise<void> {

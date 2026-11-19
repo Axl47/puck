@@ -286,7 +286,7 @@ describe("onScreen", () => {
     expect(onScreen({ ...spotify, x: 3123 }, snap.outputs)).toMatchObject({ x: 3123, width: 77 }); // a column's edge
   });
 
-  it("is null for hidden workspaces, scrolled-away columns and minimized windows", () => {
+  it("is null for hidden windows, scrolled-away columns and minimized windows", () => {
     expect(onScreen(t3, snap.outputs)).toBeNull();
     expect(onScreen({ ...spotify, x: -1340 }, snap.outputs)).toBeNull();
     expect(onScreen({ ...spotify, x: 3292 }, snap.outputs)).toBeNull(); // past DP-2's right edge
@@ -314,7 +314,9 @@ describe("input into overlays", () => {
 
   it("refuses an overlay that isn't open, or points off it", () => {
     expect(inputRefusal(panels, undefined, [onSbx])).toBeNull();
-    expect(inputRefusal(panels, "selection", [onSbx])).toMatch(/No selection overlay is open/);
+    expect(inputRefusal(panels, "selection", [onSbx])).toMatch(/no selection overlay is waiting/);
+    const unfocused = selection.map((l) => ({ ...l, focused: false }));
+    expect(inputRefusal(unfocused, "selection", [onSbx])).toMatch(/No shell surface has the keyboard/);
     expect(inputRefusal(selection, "selection", [{ x: 5000, y: 300 }])).toMatch(/5000,300 isn't on the selection overlay/);
   });
 
