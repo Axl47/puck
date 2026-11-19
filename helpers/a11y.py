@@ -100,7 +100,7 @@ class Tree:
             t = own_text(child)
             if t and self.clip and box is not None and not inside(box, rect):
                 t = self.clipped(child, child_doc, box, rect, t)
-            if t and t != parent_text:  # Chromium repeats a node's text in its inline text child
+            if t and t not in parent_text:  # Chromium repeats a node's text, whole or per line, in inline children
                 out.append(t)
             self.text_in(child, child_doc, rect, out, t or parent_text)
 

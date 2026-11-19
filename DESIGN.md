@@ -138,7 +138,8 @@ calls while a shell panel holds the keyboard (it would take the input). Then,
 inside `withFocus` (desktop lock, focus-follows-mouse paused), they move to the
 target, check the pointer landed on exactly that pixel (a mismatch means the
 user is moving the mouse, so nothing is pressed), act, hand focus back and
-return the pointer to where it was, still under the lock. `pointer_move` takes
+return the pointer to where it was, still under the lock (unless the user
+took over focus meanwhile). `pointer_move` takes
 the lock, moves, and leaves the pointer there. Position probes take the lock
 too, so a probe's overlay can't catch another Puck's click.
 
