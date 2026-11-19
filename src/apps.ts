@@ -71,6 +71,16 @@ export function resolveApp(query: string, entries: readonly DesktopEntry[]): Des
   throw new Error(`"${query}" matches several apps; use one of these ids: ${options.join(", ")}`);
 }
 
+/** Lowercase names a launched window's app_id may match: its WM class, desktop id and program name. */
+export function windowHints(entry: DesktopEntry): string[] {
+  const program = commandLine(entry)
+    .split(" ")
+    .find((t) => t !== "env" && !t.includes("="));
+  return [entry.wmClass, entry.id, program && basename(program.replace(/^["']|["']$/g, ""))]
+    .filter((h): h is string => !!h)
+    .map((h) => h.toLowerCase());
+}
+
 /** The Exec line with desktop field codes (%U, %f, …) removed. */
 export const commandLine = (entry: DesktopEntry) =>
   entry.exec

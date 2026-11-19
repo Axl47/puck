@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { commandLine, desktopEntries, resolveApp } from "../apps.ts";
+import { commandLine, desktopEntries, resolveApp, windowHints } from "../apps.ts";
 import { ARRANGEMENTS, pickWorkspace } from "../arrange.ts";
 import { sleep } from "../exec.ts";
 import { loadLayout, restoreLayout, saveLayout } from "../layout.ts";
@@ -179,7 +179,7 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Launch app",
       description:
-        "Start an installed app by name or desktop id (e.g. 'Zed', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window.",
+        "Start an installed app by name or desktop id (e.g. 'Zed', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it).",
       inputSchema: {
         app: z.string(),
         workspace: z.string().optional().describe("Workspace id to open on; switches that output to it"),
@@ -200,12 +200,14 @@ export const registerArrange: Register = (server, session) => {
       if (allowed && !target) throw new Error(`Pass output or workspace (PUCK_OUTPUTS limits Puck to ${allowed.join(", ")}).`);
       if (target) assertOutputs(target.output);
 
-      // Only a new window of this app counts, so nothing the user opens meanwhile is claimed.
+      // Only a new window of this app counts (or, with a target, a new window there, for
+      // wrapper scripts), so nothing the user opens elsewhere meanwhile is claimed.
       const before = new Set(snap.windows.map((w) => w.id));
-      const hint = (entry.wmClass ?? entry.id).toLowerCase();
+      const hints = windowHints(entry);
       const isNew = (w: Window) => {
         const a = w.app_id.toLowerCase();
-        return !before.has(w.id) && a !== "" && (a.includes(hint) || hint.includes(a));
+        const named = a !== "" && hints.some((h) => a.includes(h) || h.includes(a));
+        return !before.has(w.id) && (named || w.workspace === target?.id);
       };
       const waitForWindow = async () => {
         for (let waited = 0; waited < 15_000; waited += 250) {
@@ -223,8 +225,8 @@ export const registerArrange: Register = (server, session) => {
               await focus.show(target);
               await msg("spawn", commandLine(entry));
               const w = await waitForWindow();
-              if (!w) return null;
               await focus.settle();
+              if (!w) return null;
               // A window rule may have sent it elsewhere; under PUCK_OUTPUTS, bring it back and
               // leave that output showing what it showed.
               if (allowed && !allowed.includes(w.output)) {
@@ -238,7 +240,7 @@ export const registerArrange: Register = (server, session) => {
               }
               return w;
             },
-            { restoreFocus: false, shows: [target.output] },
+            { restoreFocus: true, shows: [target.output] },
           )
         : await msg("spawn", commandLine(entry)).then(waitForWindow);
 

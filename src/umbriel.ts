@@ -80,6 +80,17 @@ export async function focusedWindow(): Promise<Window | null> {
   }
 }
 
+const LayerSchema = z.object({ namespace: z.string(), output: z.string(), mapped: z.boolean(), focused: z.boolean() });
+
+/**
+ * The shell surface (an open panel, launcher, lock screen) holding the
+ * keyboard, if any. Meanwhile no window gets keys, though focused-window still
+ * names one.
+ */
+export async function keyboardGrab() {
+  return z.array(LayerSchema).parse(await inspect("layers")).find((l) => l.mapped && l.focused) ?? null;
+}
+
 /** Runs a compositor action, exactly as a keybind would. */
 export async function msg(action: string, ...args: string[]): Promise<void> {
   await run("umbriel", ["msg", action, ...args]);
@@ -154,7 +165,7 @@ function resumeFollowsMouse(): void {
   const umbriel = (...args: string[]) => execFileSync("umbriel", ["config", ...args], { env: desktopEnv(), encoding: "utf8" });
   umbriel("unset", FOLLOWS_MOUSE);
   if (umbriel("get", FOLLOWS_MOUSE).trim() !== want) umbriel("set", FOLLOWS_MOUSE, JSON.stringify(want));
-  rmSync(pausedPath());
+  rmSync(pausedPath(), { force: true }); // a dying holder's flock child may race us to it
 }
 
 let pausedHere = false;

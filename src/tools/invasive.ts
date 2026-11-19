@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
-import { type Focus, findWindow, focusedWindow, msg, snapshot, withFocus } from "../umbriel.ts";
+import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, snapshot, withFocus } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
 
 const MODIFIERS: Record<string, string> = {
@@ -11,8 +11,9 @@ const MODIFIERS: Record<string, string> = {
   altgr: "altgr",
 };
 
-/** Super chords are compositor keybinds (close window, lock, switch workspace), not app input. */
+/** Super chords and taps are compositor keybinds (close window, lock, launcher), not app input. */
 const COMPOSITOR_MODIFIERS = new Set(["super", "meta", "logo", "win", "mod"]);
+const COMPOSITOR_KEY = /^(super|meta|hyper)(_[lr])?$/i;
 
 const KEY_ALIASES: Record<string, string> = {
   enter: "Return",
@@ -38,6 +39,9 @@ export function chordArgs(chord: string): string[] {
   const parts = chord.split("+").map((p) => p.trim()).filter(Boolean);
   const key = parts.pop();
   if (!key) throw new Error(`Empty key chord "${chord}".`);
+  if (COMPOSITOR_KEY.test(key)) {
+    throw new Error(`"${chord}" would trigger a desktop shortcut, not reach the app; Puck doesn't send super keys.`);
+  }
   const mods = parts.map((p) => {
     if (COMPOSITOR_MODIFIERS.has(p.toLowerCase())) {
       throw new Error(`"${chord}" would trigger a desktop shortcut, not reach the app; Puck doesn't send super chords.`);
@@ -50,15 +54,30 @@ export function chordArgs(chord: string): string[] {
   return [...mods.flatMap((m) => ["-M", m]), "-k", keysym, ...mods.toReversed().flatMap((m) => ["-m", m])];
 }
 
-/** Focuses the window (focus.on confirms it holds focus) before any input is sent. */
+/**
+ * Focuses the window (focus.on confirms it holds focus) before any input is
+ * sent. Returns a check to run between inputs: focus may stay on the window or
+ * move to one the input opened (a new window, or the same app's, e.g. a save
+ * dialog), but focus on another existing window means the user clicked
+ * elsewhere, so input stops there.
+ */
 async function focusForInput(focus: Focus, windowId: string) {
-  assertOutputs(findWindow(await snapshot(), windowId).output);
+  const snap = await snapshot();
+  const target = findWindow(snap, windowId);
+  assertOutputs(target.output);
+  const grab = await keyboardGrab();
+  if (grab) {
+    throw new Error(`A shell surface (${grab.namespace} on ${grab.output}) has the keyboard, so input wouldn't reach the window; nothing was sent.`);
+  }
   await focus.on(windowId);
-}
-
-/** Throws unless the window still has focus: the user may have clicked elsewhere mid-input. */
-async function assertStillFocused(windowId: string, done: string) {
-  if ((await focusedWindow())?.id !== windowId) throw new Error(`Focus moved away from the window; stopped after ${done}.`);
+  const before = new Set(snap.windows.map((w) => w.id));
+  const ours = (w: Window) => w.id === target.id || w.pid === target.pid || !before.has(w.id);
+  /** `done` describes the input sent so far; null after the last input, when there's nothing left to stop. */
+  return async (done: string | null) => {
+    const now = await focusedWindow();
+    if (now && ours(now)) return focus.settle();
+    if (done !== null) throw new Error(`Focus moved to another window; stopped after ${done}.`);
+  };
 }
 
 const TYPE_CHUNK = 64;
@@ -132,13 +151,15 @@ export const registerInvasive: Register = (server, session) => {
     async ({ window_id, text }) =>
       withFocus(
         async (focus) => {
-          await focusForInput(focus, window_id);
-          // In chunks, re-checking focus, so a click elsewhere stops the typing.
-          for (let i = 0; i < text.length; i += TYPE_CHUNK) {
-            if (i > 0) await assertStillFocused(window_id, `${i} characters`);
-            await run("wtype", ["--", text.slice(i, i + TYPE_CHUNK)], { timeoutMs: 30_000 });
+          const check = await focusForInput(focus, window_id);
+          // In chunks (of code points, so emoji stay whole), re-checking focus between them.
+          const chars = Array.from(text);
+          for (let i = 0; i < chars.length; i += TYPE_CHUNK) {
+            if (i > 0) await check(`${i} characters`);
+            await run("wtype", ["--", chars.slice(i, i + TYPE_CHUNK).join("")], { timeoutMs: 30_000 });
           }
-          return json({ typed: text.length });
+          await check(null);
+          return json({ typed: chars.length });
         },
         { restoreFocus: true },
       ),
@@ -157,11 +178,12 @@ export const registerInvasive: Register = (server, session) => {
       withFocus(
         async (focus) => {
           const args = keys.map(chordArgs); // validate everything before focusing
-          await focusForInput(focus, window_id);
+          const check = await focusForInput(focus, window_id);
           for (const [i, a] of args.entries()) {
-            if (i > 0) await assertStillFocused(window_id, keys.slice(0, i).join(", "));
+            if (i > 0) await check(keys.slice(0, i).join(", "));
             await run("wtype", a);
           }
+          await check(null);
           return json({ pressed: keys });
         },
         { restoreFocus: true },

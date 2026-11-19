@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { commandLine, parseDesktopEntry, resolveApp } from "../src/apps.ts";
+import { commandLine, parseDesktopEntry, resolveApp, windowHints } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
 import { captureDensity, grimScale } from "../src/capture.ts";
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
@@ -136,6 +136,12 @@ describe("apps", () => {
     expect(parseDesktopEntry("x", "[Desktop Entry]\nType=Application\nName=X\nExec=x\nNoDisplay=true\n")).toBeNull();
   });
 
+  it("hints at a launched window by WM class, id and program", () => {
+    const wrapper = parseDesktopEntry("chromium", "[Desktop Entry]\nType=Application\nName=Chromium\nExec=env GDK_SCALE=1 /usr/bin/helium-browser %U\n")!;
+    expect(windowHints(wrapper)).toEqual(["chromium", "helium-browser"]);
+    expect(windowHints(zed)).toEqual(["dev.zed.zed", "dev.zed.zed", "zeditor"]);
+  });
+
   it("prefers exact matches and reports ambiguity", () => {
     expect(resolveApp("zed", all).id).toBe("dev.zed.Zed");
     expect(resolveApp("foot", all).id).toBe("foot");
@@ -171,6 +177,7 @@ describe("chordArgs", () => {
 
   it("refuses super chords, which are desktop shortcuts", () => {
     expect(() => chordArgs("super+q")).toThrow(/desktop shortcut/);
+    expect(() => chordArgs("Super_L")).toThrow(/desktop shortcut/);
   });
 });
 

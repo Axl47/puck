@@ -5,7 +5,18 @@ import { z } from "zod";
 import { run } from "./exec.ts";
 import { stateDir } from "./paths.ts";
 import { allowedOutputs } from "./scope.ts";
-import { type Snapshot, type Window, type Workspace, msg, snapshot, windows, withFocus, workspaceArgs, workspaces } from "./umbriel.ts";
+import {
+  type Snapshot,
+  type Window,
+  type Workspace,
+  msg,
+  outputs,
+  snapshot,
+  windows,
+  withFocus,
+  workspaceArgs,
+  workspaces,
+} from "./umbriel.ts";
 
 /**
  * How a snapshot names a workspace. Named workspaces are found by name.
@@ -29,7 +40,7 @@ const LayoutSnapshotSchema = z.object({
   /** Outputs recorded; null for all. */
   scope: z.array(z.string()).nullable(),
   focused: z.string().nullable(),
-  /** Named workspaces, plus dynamic ones that were visible or held windows. */
+  /** Every workspace on the recorded outputs, empty ones too (arranging may fill them). */
   workspaces: z.array(z.object({ ref: WorkspaceRefSchema, layout: z.string(), active: z.boolean() })),
   windows: z.array(
     z.object({
@@ -111,7 +122,7 @@ export function takeSnapshot(snap: Snapshot, g: Geometry, scope?: readonly strin
     scope: scope ? [...scope] : null,
     focused: snap.focused && inScope(snap.focused.output) ? snap.focused.id : null,
     workspaces: snap.workspaces
-      .filter((ws) => inScope(ws.output) && (ws.named || ws.active || ws.window_count > 0))
+      .filter((ws) => inScope(ws.output))
       .map((ws) => ({ ref: refOf(ws), layout: ws.layout, active: ws.active })),
     windows: live.flatMap((w) => {
       const ws = wsById.get(w.workspace);
@@ -182,6 +193,29 @@ export function restoreLayout(saved: LayoutSnapshot) {
       const placed = new Set<string>();
       let moved = 0;
 
+      // Layouts apply to the active workspace under the cursor, so focus one of the
+      // workspace's windows first (switching to an empty one is checked afterwards).
+      const setLayout = async (ref: WorkspaceRef, layout: string) => {
+        const { live, wss } = await current();
+        if (!ref.named && ref.windows.length > 0 && !live.some((w) => ref.windows.includes(w.id))) return; // its windows are gone
+        const ws = resolveRef(ref, wss, live, placed);
+        if (!ws || ws.layout === layout) return;
+        const member = live.find((w) => w.workspace === ws.id);
+        if (member) await focus.on(member.id);
+        else await focus.show(ws);
+        await msg("workspace-set-layout", layout);
+        if ((await workspaces()).find((w) => w.id === ws.id)?.layout !== layout) {
+          skipped.push(`layout of ${describeRef(ref)} (couldn't reach it)`);
+        }
+      };
+
+      // Before moving windows: an arranged workspace emptied by the moves can't be reached
+      // through its windows afterwards. Dynamic workspaces that vanished are resolved later,
+      // once their windows are back.
+      const wsNow = await workspaces();
+      const early = saved.workspaces.filter(({ ref }) => ref.named || wsNow.some((ws) => ws.id === ref.id));
+      for (const { ref, layout } of early) await setLayout(ref, layout);
+
       for (const want of saved.windows) {
         const { live, wss } = await current();
         const w = live.find((w) => w.id === want.id);
@@ -213,17 +247,7 @@ export function restoreLayout(saved: LayoutSnapshot) {
         if (touched) moved++;
       }
 
-      // Layouts apply to the active workspace of the focused output, so show each first.
-      for (const { ref, layout } of saved.workspaces) {
-        const { live, wss } = await current();
-        if (!ref.named && ref.windows.length > 0 && !live.some((w) => ref.windows.includes(w.id))) continue; // its windows are gone
-        const ws = resolveRef(ref, wss, live, placed);
-        if (!ws || ws.layout === layout) continue;
-        const member = live.find((w) => w.workspace === ws.id);
-        if (member) await focus.on(member.id);
-        else await focus.show(ws);
-        await msg("workspace-set-layout", layout);
-      }
+      for (const { ref, layout } of saved.workspaces.filter((ws) => !early.includes(ws))) await setLayout(ref, layout);
 
       // Widths last: layout changes reset them.
       const now = await snapshot();
@@ -239,7 +263,7 @@ export function restoreLayout(saved: LayoutSnapshot) {
       }
 
       const end = await current();
-      const visible = new Map(now.outputs.map((o) => [o.name, o.active_workspace]));
+      const visible = new Map((await outputs()).map((o) => [o.name, o.active_workspace]));
       for (const { ref } of saved.workspaces.filter((ws) => ws.active)) {
         const ws = resolveRef(ref, end.wss, end.live, placed);
         if (ws && visible.get(ws.output) !== ws.id) await focus.show(ws);

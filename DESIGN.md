@@ -107,7 +107,10 @@ what it opened but can't close my Zed by accident.
   `kill_window` also refuses when the process owns windows Puck didn't launch.
 - Typing targets the focused window: input tools check focus landed on the
   named window, then re-check between chunks of text and between chords, and
-  stop if the user clicked elsewhere.
+  stop if the user clicked elsewhere. Focus moving to a window the input
+  opened (a save dialog) is fine. They refuse while a shell surface such as
+  Noctalia's control center holds the keyboard, which focused-window doesn't
+  show.
 - `press_keys` refuses super chords; they are compositor shortcuts (close
   window, lock, switch workspace), not app input.
 
@@ -153,11 +156,12 @@ The cursor ends up on the user's focused window, not where it was.
   right monitor" is one call. Scrolling columns can't show two windows fully
   with `center_focused = "always"`, so there's no columns mode.
 - `launch_app` resolves a desktop entry by name or id, spawns it through
-  Umbriel, waits for the new window, and records it as Puck-owned. Terminal
-  apps (`Terminal=true`) are refused.
+  Umbriel, waits for the new window, and records it as Puck-owned. Focus goes
+  back to the user's window (an agent's virtual output is invisible to them).
+  Terminal apps (`Terminal=true`) are refused.
 - `layout_snapshot({ outputs? })` / `layout_restore` record and put back each
   window's workspace, floating and fullscreen state and column width, each
-  workspace's layout (empty named ones too), the visible workspaces and focus.
+  workspace's layout (empty ones too), the visible workspaces and focus.
   Umbriel deletes empty dynamic workspaces and renumbers the rest, so
   workspaces are stored as references: named ones by name, dynamic ones by id
   while that workspace exists, then by the windows they held. Scope snapshots
@@ -188,6 +192,16 @@ Node 22+, pnpm, `@modelcontextprotocol/sdk`, and zod. Installed as
 `~/.local/bin/puck` (a symlink to `dist/cli.js`), registered by adding a
 `puck` entry to indexio's `mcp/servers.json`. `mcp/sync` skips servers whose
 command isn't installed, so the Mac ignores it.
+
+### Known gaps
+
+- `close_window`, `kill_window` and a `launch_app` without a target act by
+  window id outside the desktop lock; they can still shift focus under another
+  agent's sequence, which that sequence's focus checks then catch.
+- Window screenshots assume the client scales its buffer with the output; an
+  app that doesn't (some XWayland apps) comes back smaller than reported.
+- A layout set on an empty workspace isn't guaranteed to land (set-layout
+  applies under the cursor); restore reports it as skipped when it didn't.
 
 ## Bar widget
 
