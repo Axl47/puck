@@ -254,10 +254,11 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
         return await fn(focus);
       } finally {
         try {
+          let tookOver = abandoned;
           try {
-            if (!abandoned) await putBack(original?.id ?? null, before, expected, opts);
+            if (!abandoned) tookOver = !(await putBack(original?.id ?? null, before, expected, opts));
           } finally {
-            await opts.cleanup?.();
+            if (!tookOver) await opts.cleanup?.();
           }
         } finally {
           resumeFollowsMouse();
@@ -289,10 +290,10 @@ export function withDesktopLock<T>(fn: () => Promise<T>): Promise<T> {
   return task;
 }
 
-/** The cleanup half of withFocus. */
+/** The cleanup half of withFocus. Returns false when the user took over mid-action, so nothing was put back. */
 async function putBack(original: string | null, before: Output[], expected: string | null, opts: FocusOptions) {
   const [ended, now, wss, wins] = await Promise.all([focusedWindow(), outputs(), workspaces(), windows()]);
-  if ((ended?.id ?? null) !== expected) return; // the user took over mid-action
+  if ((ended?.id ?? null) !== expected) return false;
   const allowed = allowedOutputs();
   for (const o of before) {
     if (!o.active_workspace || opts.shows === "all" || opts.shows?.includes(o.name)) continue;
@@ -309,4 +310,5 @@ async function putBack(original: string | null, before: Output[], expected: stri
     const ws = home && wss.find((ws) => ws.id === home.active_workspace);
     if (ws) await msg("workspace-switch", ...workspaceArgs(ws));
   }
+  return true;
 }
