@@ -243,13 +243,15 @@ export function cleanForOcr(img: Gray): { grid: boolean; rules: number; zeros: n
 
 /**
  * Reads `O` as zero where only a digit makes sense: in `0x` hex literals, and
- * beside a digit in a word holding at least two digits (`EO308`, `1O24`).
- * Words like `CO2` keep their letter.
+ * beside a digit in a word of at least two digits and at most one other
+ * letter (`EO308`, `1O24`). `CO2` and `ISO8601` keep their letters.
  */
 export function digitZeros(text: string): string {
   return text
     .replace(/\b[O0]x([0-9A-FO]{2,})\b/g, (_, hex: string) => `0x${hex.replaceAll("O", "0")}`)
     .replace(/\b[A-Za-z0-9]+\b/g, (word) =>
-      (word.match(/\d/g)?.length ?? 0) < 2 ? word : word.replace(/O(?=\d)|(?<=\d)O/g, "0"),
+      (word.match(/\d/g)?.length ?? 0) < 2 || (word.match(/[A-NP-Za-z]/g)?.length ?? 0) > 1
+        ? word
+        : word.replace(/O(?=\d)|(?<=\d)O/g, "0"),
     );
 }

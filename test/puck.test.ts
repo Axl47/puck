@@ -363,7 +363,7 @@ describe("OCR preparation", () => {
 
   it("reads O as zero only where a digit belongs", () => {
     expect(digitZeros("error[EO308] at 0xOB80, OxBEEF; 1O24 bytes")).toBe("error[E0308] at 0x0B80, 0xBEEF; 1024 bytes");
-    expect(digitZeros("CO2 OK Ox O2 NOVEMBER")).toBe("CO2 OK Ox O2 NOVEMBER");
+    expect(digitZeros("CO2 OK Ox O2 NOVEMBER ISO8601")).toBe("CO2 OK Ox O2 NOVEMBER ISO8601");
   });
 });
 
