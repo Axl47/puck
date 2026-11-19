@@ -1,11 +1,11 @@
-# Orrery design
+# Puck design
 
-Orrery lets agents see and drive the real desktop on gaia-arch, and shows live
+Puck lets agents see and drive the real desktop on gaia-arch, and shows live
 agent status on that desktop. It has two parts that share one repo:
 
-1. **`orrery` MCP server** (TypeScript, stdio). Wraps Umbriel's IPC, Noctalia's
+1. **`puck` MCP server** (TypeScript, stdio). Wraps Umbriel's IPC, Noctalia's
    IPC, and `grim`.
-2. **`orrery` Noctalia plugin** (Luau). A bar widget plus a background service
+2. **`puck` Noctalia plugin** (Luau). A bar widget plus a background service
    that reads T3's thread snapshot over HTTP.
 
 ## What the machine exposes
@@ -13,7 +13,7 @@ agent status on that desktop. It has two parts that share one repo:
 ### Umbriel (compositor)
 
 - One CLI, `umbriel`, talks to `$XDG_RUNTIME_DIR/umbriel-$WAYLAND_DISPLAY.sock`.
-  The T3 service (and so every agent) runs without `WAYLAND_DISPLAY`, so Orrery
+  The T3 service (and so every agent) runs without `WAYLAND_DISPLAY`, so Puck
   finds the socket itself (`umbriel-*.sock`, prefer `wayland-0`) and sets the
   variable for every child process.
 - Every inspect command takes `--json`: `windows`, `workspaces`, `outputs`,
@@ -40,7 +40,7 @@ agent status on that desktop. It has two parts that share one repo:
 - `grim -o DP-2` captures an output. `grim -T <umbriel-window-id>` captures one
   window by the same id Umbriel reports, **including windows on hidden
   workspaces** (tested on Spotify on an inactive workspace).
-- Native shots are 2560x1440 (or ~2270x1350 for a window). Orrery asks grim
+- Native shots are 2560x1440 (or ~2270x1350 for a window). Puck asks grim
   itself for 1568 px on the long edge (`-s`, relative to logical pixels) and
   JPEG (`-t jpeg`), so a screenshot costs an agent ~1.6k tokens, not ~5k, with
   no image library. Full resolution is opt-in, saved to a file.
@@ -70,10 +70,10 @@ agent status on that desktop. It has two parts that share one repo:
   approval or user input), `pullRequests[].snapshot.checksState`
   (`passing | failing | pending`).
 - A read-only token comes from
-  `t3 auth session issue --scope orchestration:read --ttl 365d --label orrery --token-only`,
-  stored at `~/.config/orrery/t3-token` (0600, never in a repo).
+  `t3 auth session issue --scope orchestration:read --ttl 365d --label puck --token-only`,
+  stored at `~/.config/puck/t3-token` (0600, never in a repo).
 - Spend is only on the WebSocket RPC `server.getUsageSummary`. The usage cache
-  file is an undocumented positional format, so Orrery doesn't parse it.
+  file is an undocumented positional format, so Puck doesn't parse it.
 
 ## MCP server
 
@@ -90,8 +90,8 @@ fire.
 | **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer` |
 
 Arrange actions are reversible and never destroy state. Invasive tools are
-registered only when `ORRERY_INVASIVE=1` is in the server's env, and even then
-`close_window`/`kill_window` refuse windows Orrery didn't launch in that
+registered only when `PUCK_INVASIVE=1` is in the server's env, and even then
+`close_window`/`kill_window` refuse windows Puck didn't launch in that
 session unless the call passes `owned_only: false`. So an agent can clean up
 what it opened but can't close my Zed by accident. Typing and pointer actions
 target the focused window, so they first check focus matches the `window_id`
@@ -110,7 +110,7 @@ the call names.
   and Helium side by side on the right monitor" is one call.
 - `launch({ app })`: resolves a desktop entry by name or id, runs it through
   `umbriel msg spawn`, waits for the new window, returns its id and records
-  it as Orrery-owned.
+  it as Puck-owned.
 - `layout_snapshot()` / `layout_restore({ snapshot_id })`: saves every window's
   workspace, output, floating state, and focus, and moves them back. Agents use
   this to leave the desktop as they found it; the agentic tests do too.
@@ -124,12 +124,12 @@ src/
   capture.ts     grim, scaled and encoded by grim itself
   tools/         one file per tier; each exports its tool definitions
   server.ts      registers tiers based on env, stdio transport
-  cli.ts         `orrery mcp` (server), `orrery state` (debug dump), `orrery t3-token`
+  cli.ts         `puck mcp` (server), `puck state` (debug dump), `puck t3-token`
 ```
 
 Node 22+, pnpm, `@modelcontextprotocol/sdk`, and zod (the SDK's own schema
-library). No other runtime dependencies. Installed as `~/.local/bin/orrery`, registered
-by adding an `orrery` entry to indexio's `mcp/servers.json`. `mcp/sync` skips
+library). No other runtime dependencies. Installed as `~/.local/bin/puck`, registered
+by adding an `puck` entry to indexio's `mcp/servers.json`. `mcp/sync` skips
 servers whose command isn't installed, so the Mac ignores it.
 
 ## Bar widget
@@ -140,7 +140,7 @@ servers whose command isn't installed, so the Mac ignores it.
 ```
 
 - **Service** (`status.luau`) polls `/api/orchestration/shell?omitIdleSubagents=1&omitOlderSettled=1`
-  every 5 s with the token from `~/.config/orrery/t3-token`, reduces it to
+  every 5 s with the token from `~/.config/puck/t3-token`, reduces it to
   counts plus the waiting and failing threads, and publishes that through
   `noctalia.state`.
 - **Widget** (`widget.luau`) renders the counts. Zero states hide; nothing
@@ -148,7 +148,7 @@ servers whose command isn't installed, so the Mac ignores it.
   checks use the error color.
 - **Panel** (`panel.luau`, opened on click) lists waiting threads and failing
   PRs by project and title.
-- **Spend** (optional, last): `orrery spend --json` makes one WebSocket call to
+- **Spend** (optional, last): `puck spend --json` makes one WebSocket call to
   `server.getUsageSummary`; the service runs it once a minute if the plugin API
   allows running commands, and the widget's tooltip shows today's spend.
 
@@ -159,13 +159,13 @@ to the bar in Noctalia's config, both recorded in omarchy-config.
 
 - **Unit**: the zod parsers and the arrange planner, against captured JSON from
   this machine. No mocks of the compositor beyond fixtures.
-- **Agentic**: Claude subagents get only the Orrery MCP tools and a desktop
+- **Agentic**: Claude subagents get only the Puck MCP tools and a desktop
   task ("put Zed and Helium side by side on the right monitor and screenshot
   it"). I check the result with my own `desktop_state` and a screenshot.
 - **Not disturbing the session**: every test run starts with
   `layout_snapshot` and ends with `layout_restore`; tests only close windows
   they launched. Where a task doesn't need my monitors, tests run on a virtual
-  output (`umbriel output-create ORRERY-TEST`), which isn't visible on either
+  output (`umbriel output-create PUCK-TEST`), which isn't visible on either
   screen, and destroy it afterwards. Focus changes are the one thing that can
   still reach me mid-test, so tests restore focus at the end.
 
