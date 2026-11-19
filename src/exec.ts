@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readdirSync } from "node:fs";
 
-const runtimeDir = process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
+export const runtimeDir = process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
 
 let cachedDisplay: string | undefined;
 

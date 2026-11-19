@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
-import { captureScale } from "../src/capture.ts";
+import { captureDensity, grimScale } from "../src/capture.ts";
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
@@ -36,8 +36,10 @@ describe("umbriel parsing", () => {
 describe("pickWorkspace", () => {
   const spotify = snap.windows.find((w) => w.app_id === "Spotify")!;
 
-  it("reuses a workspace holding only the requested windows", () => {
-    expect(pickWorkspace(snap, "DP-2", [spotify.id]).id).toBe("DP-2:6");
+  it("reuses a workspace holding only the leading requested windows", () => {
+    expect(pickWorkspace(snap, "DP-2", [spotify.id, "other"]).id).toBe("DP-2:6");
+    // Spotify would end up first there, not second.
+    expect(pickWorkspace(snap, "DP-2", ["other", spotify.id]).name).toBe("Browsers");
   });
 
   it("otherwise picks the lowest-index empty workspace", () => {
@@ -72,15 +74,39 @@ describe("layout snapshots", () => {
     expect(saved.windows.find((w) => w.workspace.name === "Dump")?.extent).toBeCloseTo(0.9, 1);
   });
 
-  it("finds named workspaces by name and dynamic ones by position", () => {
-    const ws = (id: string, name: string, named: boolean, index: number) => ({
-      id, name, named, index, output: "V", layout: "scrolling", active: false, focused: false, window_count: 0,
+  describe("resolveRef", () => {
+    const ws = (id: string, name: string, named = false) => ({
+      id, name, named, index: 0, output: "V", layout: "scrolling", active: false, focused: false, window_count: 0,
     });
-    // Dynamic "V:1" emptied and vanished; "V:3" is now first.
-    const now = [ws("V:3", "1", false, 1), ws("V:4", "2", false, 2), ws("V:9", "Mail", true, 3)];
-    expect(resolveRef({ output: "V", name: "2", named: false, index: 2 }, now)?.id).toBe("V:4");
-    expect(resolveRef({ output: "V", name: "Mail", named: true, index: 1 }, now)?.id).toBe("V:9");
-    expect(resolveRef({ output: "V", name: "5", named: false, index: 5 }, now)).toBeUndefined();
+    const ref = (windows: string[], id = "V:1") => ({ id, output: "V", name: "?", named: false, windows });
+    const none = new Set<string>();
+
+    it("finds named workspaces by name", () => {
+      expect(resolveRef({ id: "V:2", output: "V", name: "Mail", named: true, windows: [] }, [ws("V:9", "Mail", true)], [], none)?.id).toBe("V:9");
+    });
+
+    it("prefers the recorded workspace while it exists", () => {
+      // A and B were arranged together onto V:7, leaving their own V:6 with a newer window.
+      const now = [ws("V:6", "1"), ws("V:7", "2"), ws("V:8", "3")];
+      const wins = [{ id: "A", workspace: "V:7" }, { id: "B", workspace: "V:7" }, { id: "new", workspace: "V:6" }];
+      expect(resolveRef(ref(["A", "B"], "V:6"), now, wins, none)?.id).toBe("V:6");
+    });
+
+    it("finds a dynamic workspace by the windows it held, after renumbering", () => {
+      // A was alone on the first dynamic workspace; arranging moved it next to B, so that workspace vanished.
+      const now = [ws("V:4", "1"), ws("V:5", "2")];
+      const wins = [{ id: "A", workspace: "V:4" }, { id: "B", workspace: "V:4" }];
+      expect(resolveRef(ref(["A"]), now, wins, none)?.id).toBe("V:5"); // V:4 also holds B, so A goes to the empty one
+      const after = [{ id: "A", workspace: "V:5" }, { id: "B", workspace: "V:4" }];
+      expect(resolveRef(ref(["B"]), now, after, new Set(["A"]))?.id).toBe("V:4");
+    });
+
+    it("keeps windows together that were together", () => {
+      const now = [ws("V:4", "1"), ws("V:5", "2"), ws("V:6", "3")];
+      const wins = [{ id: "A", workspace: "V:5" }, { id: "B", workspace: "V:4" }, { id: "C", workspace: "V:4" }];
+      // A was already put back on V:5, so B (recorded with A) follows it there.
+      expect(resolveRef(ref(["A", "B"]), now, wins, new Set(["A"]))?.id).toBe("V:5");
+    });
   });
 });
 
@@ -112,11 +138,19 @@ describe("apps", () => {
 });
 
 describe("capture scale", () => {
+  const out = { kind: "output", name: "DP-2", width: 1600, height: 900, scale: 1.6 } as const;
+
   it("caps inline shots at 1568 px and keeps full-res native", () => {
-    const out = { kind: "output", name: "DP-2", width: 1600, height: 900, scale: 1.6 } as const;
-    expect(captureScale(out, false) * 1600).toBeCloseTo(1568);
-    expect(captureScale(out, true)).toBe(1.6);
-    expect(captureScale({ ...out, width: 400, height: 300 }, false)).toBe(1.6);
+    expect(captureDensity(out, false) * 1600).toBeCloseTo(1568);
+    expect(captureDensity(out, true)).toBe(1.6);
+    expect(captureDensity({ ...out, width: 400, height: 300 }, false)).toBe(1.6);
+  });
+
+  it("scales window captures relative to their buffer", () => {
+    // Measured: grim -T with -s 0.5 on a 1419 px window at 1.6x gives 1135 px, half the buffer.
+    const win = { kind: "window", id: "w", width: 1419, height: 843, scale: 1.6 } as const;
+    expect(grimScale(win, captureDensity(win, true))).toBe(1);
+    expect(1419 * 1.6 * grimScale(win, captureDensity(win, false))).toBeCloseTo(1568);
   });
 });
 
@@ -124,8 +158,12 @@ describe("chordArgs", () => {
   it("wraps keys in their modifiers", () => {
     expect(chordArgs("ctrl+shift+t")).toEqual(["-M", "ctrl", "-M", "shift", "-k", "t", "-m", "shift", "-m", "ctrl"]);
     expect(chordArgs("enter")).toEqual(["-k", "Return"]);
-    expect(chordArgs("super+f5")).toEqual(["-M", "logo", "-k", "F5", "-m", "logo"]);
+    expect(chordArgs("alt+f5")).toEqual(["-M", "alt", "-k", "F5", "-m", "alt"]);
     expect(() => chordArgs("hyper+a")).toThrow(/Unknown modifier/);
+  });
+
+  it("refuses super chords, which are desktop shortcuts", () => {
+    expect(() => chordArgs("super+q")).toThrow(/desktop shortcut/);
   });
 });
 

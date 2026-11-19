@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
-import { findWindow, focusOn, focusedWindow, msg, snapshot, withFocus } from "../umbriel.ts";
+import { type Focus, findWindow, focusedWindow, msg, snapshot, withFocus } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
 
 const MODIFIERS: Record<string, string> = {
@@ -9,11 +9,10 @@ const MODIFIERS: Record<string, string> = {
   shift: "shift",
   alt: "alt",
   altgr: "altgr",
-  super: "logo",
-  meta: "logo",
-  logo: "logo",
-  win: "logo",
 };
+
+/** Super chords are compositor keybinds (close window, lock, switch workspace), not app input. */
+const COMPOSITOR_MODIFIERS = new Set(["super", "meta", "logo", "win", "mod"]);
 
 const KEY_ALIASES: Record<string, string> = {
   enter: "Return",
@@ -40,20 +39,29 @@ export function chordArgs(chord: string): string[] {
   const key = parts.pop();
   if (!key) throw new Error(`Empty key chord "${chord}".`);
   const mods = parts.map((p) => {
+    if (COMPOSITOR_MODIFIERS.has(p.toLowerCase())) {
+      throw new Error(`"${chord}" would trigger a desktop shortcut, not reach the app; Puck doesn't send super chords.`);
+    }
     const m = MODIFIERS[p.toLowerCase()];
-    if (!m) throw new Error(`Unknown modifier "${p}" in "${chord}". Use ctrl, shift, alt, altgr or super.`);
+    if (!m) throw new Error(`Unknown modifier "${p}" in "${chord}". Use ctrl, shift, alt or altgr.`);
     return m;
   });
   const keysym = KEY_ALIASES[key.toLowerCase()] ?? (/^f\d{1,2}$/i.test(key) ? key.toUpperCase() : key);
   return [...mods.flatMap((m) => ["-M", m]), "-k", keysym, ...mods.toReversed().flatMap((m) => ["-m", m])];
 }
 
-/** Focuses the window and confirms it holds focus before any input is sent. */
-async function focusForInput(windowId: string) {
+/** Focuses the window (focus.on confirms it holds focus) before any input is sent. */
+async function focusForInput(focus: Focus, windowId: string) {
   assertOutputs(findWindow(await snapshot(), windowId).output);
-  await focusOn(windowId);
-  if ((await focusedWindow())?.id !== windowId) throw new Error("Could not focus that window; no input was sent.");
+  await focus.on(windowId);
 }
+
+/** Throws unless the window still has focus: the user may have clicked elsewhere mid-input. */
+async function assertStillFocused(windowId: string, done: string) {
+  if ((await focusedWindow())?.id !== windowId) throw new Error(`Focus moved away from the window; stopped after ${done}.`);
+}
+
+const TYPE_CHUNK = 64;
 
 /**
  * Closing, killing, and synthetic input. Registered only when PUCK_INVASIVE=1.
@@ -91,13 +99,22 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Kill window",
       description:
-        "Force-quit a window's app without letting it save. Last resort for a hung window. By default only windows launched with launch_app in this session.",
+        "Force-quit a window's app process without letting it save. Last resort for a hung window. By default only windows launched with launch_app in this session, whose process owns no other windows.",
       inputSchema: { window_id: z.string(), owned_only: z.boolean().default(true) },
       annotations: { destructiveHint: true },
     },
     async ({ window_id, owned_only }) => {
-      assertOutputs(findWindow(await snapshot(), window_id).output);
+      const snap = await snapshot();
+      const w = findWindow(snap, window_id);
+      assertOutputs(w.output);
       guardOwned(window_id, owned_only);
+      // window-kill ends the whole client process, which may also own the user's windows.
+      const others = snap.windows.filter((o) => o.pid === w.pid && o.id !== w.id && !session.owned.has(o.id));
+      if (owned_only && others.length) {
+        throw new Error(
+          `Refusing: this window's process also owns ${others.length} window(s) Puck didn't launch, and killing it would close them too. Use close_window.`,
+        );
+      }
       await msg("window-kill", window_id);
       session.owned.delete(window_id);
       return json({ killed: window_id });
@@ -114,9 +131,13 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ window_id, text }) =>
       withFocus(
-        async () => {
-          await focusForInput(window_id);
-          await run("wtype", ["--", text], { timeoutMs: 60_000 });
+        async (focus) => {
+          await focusForInput(focus, window_id);
+          // In chunks, re-checking focus, so a click elsewhere stops the typing.
+          for (let i = 0; i < text.length; i += TYPE_CHUNK) {
+            if (i > 0) await assertStillFocused(window_id, `${i} characters`);
+            await run("wtype", ["--", text.slice(i, i + TYPE_CHUNK)], { timeoutMs: 30_000 });
+          }
           return json({ typed: text.length });
         },
         { restoreFocus: true },
@@ -128,16 +149,19 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Press keys",
       description:
-        "Focus a window and press key chords in order, e.g. ['ctrl+l', 'Return']. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr, super.",
+        "Focus a window and press key chords in order, e.g. ['ctrl+l', 'Return']. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr.",
       inputSchema: { window_id: z.string(), keys: z.array(z.string()).min(1).max(50) },
       annotations: { destructiveHint: true },
     },
     async ({ window_id, keys }) =>
       withFocus(
-        async () => {
+        async (focus) => {
           const args = keys.map(chordArgs); // validate everything before focusing
-          await focusForInput(window_id);
-          for (const a of args) await run("wtype", a);
+          await focusForInput(focus, window_id);
+          for (const [i, a] of args.entries()) {
+            if (i > 0) await assertStillFocused(window_id, keys.slice(0, i).join(", "));
+            await run("wtype", a);
+          }
           return json({ pressed: keys });
         },
         { restoreFocus: true },

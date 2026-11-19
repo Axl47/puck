@@ -1,26 +1,37 @@
 import { statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { commandLine, desktopEntries, resolveApp } from "../apps.ts";
 import { ARRANGEMENTS, pickWorkspace } from "../arrange.ts";
 import { sleep } from "../exec.ts";
 import { loadLayout, restoreLayout, saveLayout } from "../layout.ts";
-import { clearActiveNotifications, dismissNotification, setDoNotDisturb, setThemeMode, setWallpaper } from "../noctalia.ts";
+import {
+  clearActiveNotifications,
+  dismissNotification,
+  setDoNotDisturb,
+  setThemeMode,
+  setWallpaper,
+  shellState,
+} from "../noctalia.ts";
 import {
   LAYOUTS,
   type Window,
   findOutput,
   findWindow,
   findWorkspace,
-  focusOn,
   msg,
+  outputs,
   snapshot,
   windows,
   withFocus,
   workspaceArgs,
+  workspaces,
 } from "../umbriel.ts";
 import { type Register, allowedOutputs, assertOutputs, assertUnrestricted, json } from "./common.ts";
 
 const reversible = { readOnlyHint: false, destructiveHint: false } as const;
+/** Changes nothing can undo exactly (a dismissed notification, a replaced setting). */
+const lasting = { readOnlyHint: false, destructiveHint: true } as const;
 
 /** Where a set of windows ended up, for tool results. */
 async function placement(ids: readonly string[]) {
@@ -42,9 +53,9 @@ export const registerArrange: Register = (server, session) => {
     },
     async ({ window_id }) =>
       withFocus(
-        async () => {
+        async (focus) => {
           assertOutputs(findWindow(await snapshot(), window_id).output);
-          await focusOn(window_id);
+          await focus.on(window_id);
           return json(await placement([window_id]));
         },
         { restoreFocus: false, shows: "all" },
@@ -68,7 +79,7 @@ export const registerArrange: Register = (server, session) => {
     },
     async ({ window_id, workspace, output, floating, fullscreen }) =>
       withFocus(
-        async () => {
+        async (focus) => {
           const snap = await snapshot();
           const w = findWindow(snap, window_id);
           const target = workspace
@@ -78,14 +89,13 @@ export const registerArrange: Register = (server, session) => {
               : undefined;
           assertOutputs(w.output, ...(target ? [target.output] : []));
           if (target && target.id !== w.workspace) {
-            await focusOn(w.id);
-            await msg("window-move-to-workspace-silent", ...workspaceArgs(target));
+            await focus.act(w.id, "window-move-to-workspace-silent", ...workspaceArgs(target));
           }
-          if (floating !== undefined && floating !== w.floating) await msg("window-toggle-floating", w.id);
-          if (fullscreen !== undefined && fullscreen !== w.fullscreen) {
-            await focusOn(w.id);
-            await msg("window-toggle-fullscreen");
+          if (floating !== undefined && floating !== w.floating) {
+            await msg("window-toggle-floating", w.id);
+            await focus.settle();
           }
+          if (fullscreen !== undefined && fullscreen !== w.fullscreen) await focus.act(w.id, "window-toggle-fullscreen");
           await sleep(150);
           return json(await placement([w.id]));
         },
@@ -109,7 +119,7 @@ export const registerArrange: Register = (server, session) => {
     },
     async ({ window_ids, output, layout, workspace }) =>
       withFocus(
-        async () => {
+        async (focus) => {
           const snap = await snapshot();
           findOutput(snap, output);
           const wins = window_ids.map((id) => findWindow(snap, id));
@@ -119,15 +129,14 @@ export const registerArrange: Register = (server, session) => {
 
           // Move in order so tiling order follows window_ids.
           for (const w of wins) {
-            if (w.workspace === target.id && !w.floating) continue;
-            await focusOn(w.id);
-            if (w.workspace !== target.id) await msg("window-move-to-workspace-silent", ...workspaceArgs(target));
-            if (w.floating) await msg("window-toggle-floating", w.id);
+            if (w.workspace !== target.id) await focus.act(w.id, "window-move-to-workspace-silent", ...workspaceArgs(target));
+            if (w.floating) {
+              await msg("window-toggle-floating", w.id);
+              await focus.settle();
+            }
           }
-          await msg("workspace-switch", ...workspaceArgs(target));
-          const first = wins[0] as Window;
-          await focusOn(first.id);
-          await msg("workspace-set-layout", ARRANGEMENTS[layout]);
+          // Focusing a window on the target shows it and puts the cursor there, where set-layout applies.
+          await focus.act((wins[0] as Window).id, "workspace-set-layout", ARRANGEMENTS[layout]);
           await sleep(300); // let the layout animation settle before reporting geometry
           return json({ workspace: target.id, windows: await placement(window_ids) });
         },
@@ -148,11 +157,17 @@ export const registerArrange: Register = (server, session) => {
     },
     async ({ workspace, layout }) =>
       withFocus(
-        async () => {
-          const ws = findWorkspace(await snapshot(), workspace);
+        async (focus) => {
+          const snap = await snapshot();
+          const ws = findWorkspace(snap, workspace);
           assertOutputs(ws.output);
-          await msg("workspace-switch", ...workspaceArgs(ws));
-          if (layout) await msg("workspace-set-layout", layout);
+          await focus.show(ws);
+          if (layout) {
+            // set-layout applies under the cursor; focusing one of the workspace's windows puts it there.
+            const member = snap.windows.find((w) => w.workspace === ws.id && !w.scratchpad);
+            if (member) await focus.on(member.id);
+            await msg("workspace-set-layout", layout);
+          }
           return json({ workspace: ws.id, layout: layout ?? ws.layout });
         },
         { restoreFocus: true, shows: "all" },
@@ -172,48 +187,71 @@ export const registerArrange: Register = (server, session) => {
       },
       annotations: { ...reversible, openWorldHint: true },
     },
-    async ({ app, workspace, output }) =>
-      withFocus(
-        async () => {
-          const entry = resolveApp(app, desktopEntries());
-          const snap = await snapshot();
-          const target = workspace
-            ? findWorkspace(snap, workspace)
-            : output
-              ? findWorkspace(snap, findOutput(snap, output).active_workspace ?? "")
-              : undefined;
-          const allowed = allowedOutputs();
-          if (allowed && !target) throw new Error(`Pass output or workspace (PUCK_OUTPUTS limits Puck to ${allowed.join(", ")}).`);
-          if (target) {
-            assertOutputs(target.output);
-            await msg("workspace-switch", ...workspaceArgs(target));
-          }
+    async ({ app, workspace, output }) => {
+      const entry = resolveApp(app, desktopEntries());
+      if (entry.terminal) throw new Error(`${entry.name} runs in a terminal; launch_app starts graphical apps only.`);
+      const snap = await snapshot();
+      const target = workspace
+        ? findWorkspace(snap, workspace)
+        : output
+          ? findWorkspace(snap, findOutput(snap, output).active_workspace ?? "")
+          : undefined;
+      const allowed = allowedOutputs();
+      if (allowed && !target) throw new Error(`Pass output or workspace (PUCK_OUTPUTS limits Puck to ${allowed.join(", ")}).`);
+      if (target) assertOutputs(target.output);
 
-          const before = new Set(snap.windows.map((w) => w.id));
-          await msg("spawn", commandLine(entry));
-          for (let waited = 0; waited < 15_000; waited += 250) {
-            await sleep(250);
-            const fresh = (await windows()).filter((w) => !before.has(w.id));
-            if (fresh.length === 0) continue;
-            const hint = (entry.wmClass ?? entry.id).toLowerCase();
-            const w = fresh.find((w) => w.app_id.toLowerCase().includes(hint) || hint.includes(w.app_id.toLowerCase())) ?? fresh[0];
-            if (!w) continue;
-            session.owned.add(w.id);
-            // A window rule may have sent it elsewhere; under PUCK_OUTPUTS, bring it back.
-            if (allowed && target && !allowed.includes(w.output)) {
-              await focusOn(w.id);
-              await msg("window-move-to-workspace-silent", ...workspaceArgs(target));
-            }
-            return json({ app: entry.name, window: (await placement([w.id]))[0] });
-          }
-          return json({
-            app: entry.name,
-            window: null,
-            note: "No new window within 15 s. Single-instance apps may have reused an existing window; check desktop_state.",
-          });
-        },
-        { restoreFocus: false, shows: "all" },
-      ),
+      // Only a new window of this app counts, so nothing the user opens meanwhile is claimed.
+      const before = new Set(snap.windows.map((w) => w.id));
+      const hint = (entry.wmClass ?? entry.id).toLowerCase();
+      const isNew = (w: Window) => {
+        const a = w.app_id.toLowerCase();
+        return !before.has(w.id) && a !== "" && (a.includes(hint) || hint.includes(a));
+      };
+      const waitForWindow = async () => {
+        for (let waited = 0; waited < 15_000; waited += 250) {
+          await sleep(250);
+          const w = (await windows()).find(isNew);
+          if (w) return w;
+        }
+        return null;
+      };
+
+      // New windows open on the focused output, so a target keeps focus there until the window maps.
+      const w = target
+        ? await withFocus(
+            async (focus) => {
+              await focus.show(target);
+              await msg("spawn", commandLine(entry));
+              const w = await waitForWindow();
+              if (!w) return null;
+              await focus.settle();
+              // A window rule may have sent it elsewhere; under PUCK_OUTPUTS, bring it back and
+              // leave that output showing what it showed.
+              if (allowed && !allowed.includes(w.output)) {
+                const shown = (await outputs()).find((o) => o.name === w.output)?.active_workspace;
+                await focus.act(w.id, "window-move-to-workspace-silent", ...workspaceArgs(target));
+                const ws = (await workspaces()).find((ws) => ws.id === shown);
+                if (ws && (await outputs()).find((o) => o.name === ws.output)?.active_workspace !== ws.id) {
+                  await msg("workspace-switch", ...workspaceArgs(ws));
+                }
+                await focus.on(w.id);
+              }
+              return w;
+            },
+            { restoreFocus: false, shows: [target.output] },
+          )
+        : await msg("spawn", commandLine(entry)).then(waitForWindow);
+
+      if (!w) {
+        return json({
+          app: entry.name,
+          window: null,
+          note: "No new window within 15 s. Single-instance apps may have reused an existing window; check desktop_state.",
+        });
+      }
+      session.owned.add(w.id);
+      return json({ app: entry.name, window: (await placement([w.id]))[0] });
+    },
   );
 
   server.registerTool(
@@ -258,7 +296,7 @@ export const registerArrange: Register = (server, session) => {
       title: "Dismiss notification",
       description: "Close one notification by id (from `notifications`), or every notification on screen with all: true.",
       inputSchema: { id: z.number().int().optional(), all: z.boolean().optional() },
-      annotations: reversible,
+      annotations: lasting,
     },
     async ({ id, all }) => {
       assertUnrestricted("Dismissing notifications");
@@ -274,25 +312,25 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Shell settings",
       description:
-        "Change Noctalia settings: wallpaper (all outputs, or one), theme mode, do-not-disturb. These persist. Read current values from desktop_state first if you mean to put them back.",
+        "Change Noctalia settings: wallpaper (all outputs, or one), theme mode, do-not-disturb. These persist; the result includes the previous values so you can put them back.",
       inputSchema: {
-        wallpaper: z.object({ path: z.string(), output: z.string().optional() }).optional(),
+        wallpaper: z.object({ path: z.string().describe("Absolute path to an image"), output: z.string().optional() }).optional(),
         theme_mode: z.enum(["dark", "light", "auto"]).optional(),
         do_not_disturb: z.boolean().optional(),
       },
-      annotations: reversible,
+      annotations: lasting,
     },
     async ({ wallpaper, theme_mode, do_not_disturb }) => {
       assertUnrestricted("Changing shell settings");
-      if (wallpaper) {
-        if (!statSync(wallpaper.path, { throwIfNoEntry: false })?.isFile()) {
-          throw new Error(`No image file at ${wallpaper.path}.`);
-        }
-        await setWallpaper(wallpaper.path, wallpaper.output);
+      if (wallpaper && !(isAbsolute(wallpaper.path) && statSync(wallpaper.path, { throwIfNoEntry: false })?.isFile())) {
+        throw new Error(`No image file at ${wallpaper.path} (the path must be absolute).`);
       }
+      const snap = await snapshot();
+      const previous = await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name));
+      if (wallpaper) await setWallpaper(wallpaper.path, wallpaper.output);
       if (theme_mode) await setThemeMode(theme_mode);
       if (do_not_disturb !== undefined) await setDoNotDisturb(do_not_disturb);
-      return json({ changed: { wallpaper, theme_mode, do_not_disturb } });
+      return json({ changed: { wallpaper, theme_mode, do_not_disturb }, previous });
     },
   );
 };

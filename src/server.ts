@@ -15,7 +15,7 @@ export function createServer(): McpServer {
       instructions:
         "Puck sees and drives the user's real desktop (Umbriel compositor, Noctalia shell). Start with desktop_state. " +
         "This is the user's live session: take a layout_snapshot before rearranging and layout_restore it when your task doesn't need the new layout to stay. " +
-        "Focus changes briefly move the user's cursor; batch your actions.",
+        "Actions move the user's cursor onto the window they act on; batch them.",
     },
   );
   const session: Session = { owned: new Set() };

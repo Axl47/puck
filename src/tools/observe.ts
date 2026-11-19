@@ -60,7 +60,8 @@ export const registerObserve: Register = (server, session) => {
     },
     async () => {
       const snap = await snapshot();
-      const shell = await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name));
+      // Best effort: the desktop view still works while Noctalia restarts.
+      const shell = await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
       return json({ ...describeDesktop(snap, session.owned), shell });
     },
   );

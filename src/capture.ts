@@ -12,14 +12,15 @@ export type CaptureTarget =
   | { kind: "region"; x: number; y: number; width: number; height: number; scale: number };
 
 /**
- * grim's `-s` factor is relative to logical pixels. Inline shots are capped at
+ * Pixels per logical pixel in the result. Inline shots are capped at
  * INLINE_LONG_EDGE; full-resolution shots use the output's own scale.
  */
-export function captureScale(t: CaptureTarget, fullRes: boolean): number {
-  if (fullRes) return t.scale;
-  const longEdge = Math.max(t.width, t.height);
-  return Math.min(t.scale, INLINE_LONG_EDGE / longEdge);
+export function captureDensity(t: CaptureTarget, fullRes: boolean): number {
+  return fullRes ? t.scale : Math.min(t.scale, INLINE_LONG_EDGE / Math.max(t.width, t.height));
 }
+
+/** grim's `-s` factor: relative to logical pixels for outputs and regions, but to the buffer for windows. */
+export const grimScale = (t: CaptureTarget, density: number) => (t.kind === "window" ? density / t.scale : density);
 
 function grimArgs(t: CaptureTarget): string[] {
   switch (t.kind) {
@@ -36,14 +37,15 @@ export type Capture = { data: Buffer; mimeType: "image/jpeg" | "image/png"; widt
 
 /** Inline shot: scaled JPEG bytes. */
 export async function capture(t: CaptureTarget): Promise<Capture> {
-  const s = captureScale(t, false);
-  const data = await runBinary("grim", [...grimArgs(t), "-s", s.toFixed(4), "-t", "jpeg", "-q", "85", "-"]);
-  return { data, mimeType: "image/jpeg", width: Math.round(t.width * s), height: Math.round(t.height * s) };
+  const d = captureDensity(t, false);
+  const data = await runBinary("grim", [...grimArgs(t), "-s", grimScale(t, d).toFixed(4), "-t", "jpeg", "-q", "85", "-"]);
+  return { data, mimeType: "image/jpeg", width: Math.round(t.width * d), height: Math.round(t.height * d) };
 }
 
 /** Full-resolution PNG saved under Puck's state dir; returns its path. */
 export async function captureToFile(t: CaptureTarget): Promise<string> {
-  const data = await runBinary("grim", [...grimArgs(t), "-s", captureScale(t, true).toFixed(4), "-t", "png", "-"]);
+  const s = grimScale(t, captureDensity(t, true));
+  const data = await runBinary("grim", [...grimArgs(t), "-s", s.toFixed(4), "-t", "png", "-"]);
   const dir = join(stateDir(), "screenshots");
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${t.kind}.png`);

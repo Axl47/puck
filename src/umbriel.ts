@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { CommandError, run } from "./exec.ts";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { CommandError, desktopEnv, run, runtimeDir } from "./exec.ts";
 import { allowedOutputs } from "./scope.ts";
 
 // Umbriel's `--json` output, trimmed to the fields Puck uses. Unknown keys are dropped.
@@ -111,53 +114,159 @@ export function findOutput(snap: Pick<Snapshot, "outputs">, name: string): Outpu
   return o;
 }
 
-let queue: Promise<unknown> = Promise.resolve();
+
+const FOLLOWS_MOUSE = "input.focus.follows_mouse";
+const lockPath = () => join(runtimeDir, "puck.lock");
+/** Holds the user's focus-follows-mouse value while an action has it paused. */
+const pausedPath = () => join(runtimeDir, "puck-follows-mouse");
+
+/**
+ * Takes the desktop lock every Puck process shares (each agent's MCP server,
+ * `puck restore`). `flock` holds it while its stdin stays open, so the kernel
+ * frees it if this process dies, and first puts back a focus-follows-mouse
+ * value a dead holder left paused (even after SIGKILL).
+ */
+async function lockDesktop(): Promise<() => void> {
+  const script = `echo; cat; f=$1; [ -f "$f" ] || exit 0
+umbriel config unset ${FOLLOWS_MOUSE}
+[ "$(umbriel config get ${FOLLOWS_MOUSE})" = "$(cat "$f")" ] || umbriel config set ${FOLLOWS_MOUSE} "\"$(cat "$f")\""
+rm -f "$f"`;
+  const child = spawn("flock", ["--timeout", "120", lockPath(), "sh", "-c", script, "sh", pausedPath()], {
+    env: desktopEnv(),
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.stdout.once("data", () => resolve());
+    child.once("error", reject);
+    child.once("exit", () => reject(new Error("Another Puck session held the desktop for 2 minutes; try again.")));
+  });
+  return () => child.stdin.end();
+}
+
+/**
+ * Puts back the focus-follows-mouse value recorded at pausedPath, if any.
+ * `unset` drops Puck's override; the recorded value is set again only if the
+ * user had an override of their own. Synchronous so it can run on exit.
+ */
+function resumeFollowsMouse(): void {
+  if (!existsSync(pausedPath())) return;
+  const want = readFileSync(pausedPath(), "utf8");
+  const umbriel = (...args: string[]) => execFileSync("umbriel", ["config", ...args], { env: desktopEnv(), encoding: "utf8" });
+  umbriel("unset", FOLLOWS_MOUSE);
+  if (umbriel("get", FOLLOWS_MOUSE).trim() !== want) umbriel("set", FOLLOWS_MOUSE, JSON.stringify(want));
+  rmSync(pausedPath());
+}
+
+let pausedHere = false;
+process.once("exit", () => {
+  if (pausedHere) resumeFollowsMouse();
+});
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.once(signal, () => process.exit(1));
+
+/** Focus control handed to an action running inside withFocus. */
+export type Focus = {
+  /** Focuses a window and warps the cursor onto it, then confirms it holds focus. */
+  on(id: string): Promise<void>;
+  /** Focuses `id`, then runs an action that applies to the focused window, accepting where focus lands. */
+  act(id: string, action: string, ...args: string[]): Promise<void>;
+  /** Shows a workspace on its output, which also focuses that output. */
+  show(ws: Workspace): Promise<void>;
+  /** Accepts whatever holds focus now as the action's doing (e.g. a window it launched). */
+  settle(): Promise<void>;
+};
 
 type FocusOptions = {
-  /** Put focus back on the user's window afterwards (when it's still on screen), instead of leaving it where the action put it. */
+  /** Put focus back on the user's window afterwards, instead of leaving it where the action put it. */
   restoreFocus: boolean;
   /** Outputs whose visible workspace the action is meant to change. Every other output gets its workspace back. */
   shows?: readonly string[] | "all";
 };
 
+let queue: Promise<unknown> = Promise.resolve();
+
 /**
- * Runs `fn` with exclusive control of focus. Most Umbriel actions apply to the
- * focused window on the output under the cursor, so a sequence must focus (and
- * warp to) its target first, and focusing a window on a hidden workspace shows
- * that workspace. So for the duration focus-follows-mouse is paused (the user's
- * mouse can't steal focus mid-sequence); afterwards each output not in `shows`
- * gets its visible workspace back, and focus lands on the user's window or the
- * action's, per `restoreFocus`.
+ * Runs `fn` with exclusive control of focus, across every Puck process. Most
+ * Umbriel actions apply to the focused window on the output under the cursor,
+ * so a sequence must focus (and warp to) its target first, and focusing a
+ * window on a hidden workspace shows that workspace. So for the duration
+ * focus-follows-mouse is paused; afterwards each output not in `shows` gets its
+ * visible workspace back, and focus lands on the user's window or the
+ * action's, per `restoreFocus`. If focus ends up somewhere the action didn't
+ * put it, the user took over, and their changes are left alone.
  */
-export function withFocus<T>(fn: () => Promise<T>, opts: FocusOptions): Promise<T> {
+export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOptions): Promise<T> {
   const task = queue.then(async () => {
-    const [original, before] = await Promise.all([focusedWindow(), outputs()]);
-    await run("umbriel", ["config", "set", "input.focus.follows_mouse", '"off"']);
+    const release = await lockDesktop();
     try {
-      return await fn();
-    } finally {
+      resumeFollowsMouse(); // a Puck that died mid-action left it paused
+      const [original, before, follows] = await Promise.all([
+        focusedWindow(),
+        outputs(),
+        run("umbriel", ["config", "get", FOLLOWS_MOUSE]),
+      ]);
+      writeFileSync(pausedPath(), follows.trim());
+      pausedHere = true;
+      await run("umbriel", ["config", "set", FOLLOWS_MOUSE, '"off"']);
+
+      let expected = original?.id ?? null;
+      const focus: Focus = {
+        async on(id) {
+          await msg("window-focus-warp", id);
+          expected = id;
+          if ((await focusedWindow())?.id !== id) {
+            throw new Error(`Couldn't focus window ${id}; the user may be using the desktop. Stopped there.`);
+          }
+        },
+        async act(id, action, ...args) {
+          await focus.on(id);
+          await msg(action, ...args);
+          await focus.settle(); // moving a window away hands focus to its neighbour
+        },
+        async show(ws) {
+          await msg("workspace-switch", ...workspaceArgs(ws));
+          await focus.settle();
+        },
+        async settle() {
+          expected = (await focusedWindow())?.id ?? null;
+        },
+      };
+
       try {
-        const [ended, now, wss] = await Promise.all([focusedWindow(), outputs(), workspaces()]);
-        const allowed = allowedOutputs();
-        for (const o of before) {
-          if (!o.active_workspace || opts.shows === "all" || opts.shows?.includes(o.name)) continue;
-          if (allowed && !allowed.includes(o.name)) continue; // never touch outputs outside PUCK_OUTPUTS
-          const ws = wss.find((ws) => ws.id === o.active_workspace);
-          const current = now.find((n) => n.name === o.name)?.active_workspace;
-          if (ws && current !== ws.id) await msg("workspace-switch", ...workspaceArgs(ws));
-        }
-        const target = opts.restoreFocus ? original : ended;
-        if (target && (await windows()).find((w) => w.id === target.id)?.visible) {
-          await msg("window-focus-warp", target.id);
-        }
+        return await fn(focus);
       } finally {
-        await run("umbriel", ["config", "unset", "input.focus.follows_mouse"]).catch(() => {});
+        try {
+          await putBack(original?.id ?? null, before, expected, opts);
+        } finally {
+          resumeFollowsMouse();
+          pausedHere = false;
+        }
       }
+    } finally {
+      release();
     }
   });
   queue = task.catch(() => {});
   return task;
 }
 
-/** Focuses a window and moves the cursor onto it, so focused-output actions target it. */
-export const focusOn = (id: string) => msg("window-focus-warp", id);
+/** The cleanup half of withFocus. */
+async function putBack(original: string | null, before: Output[], expected: string | null, opts: FocusOptions) {
+  const [ended, now, wss, wins] = await Promise.all([focusedWindow(), outputs(), workspaces(), windows()]);
+  if ((ended?.id ?? null) !== expected) return; // the user took over mid-action
+  const allowed = allowedOutputs();
+  for (const o of before) {
+    if (!o.active_workspace || opts.shows === "all" || opts.shows?.includes(o.name)) continue;
+    if (allowed && !allowed.includes(o.name)) continue; // never touch outputs outside PUCK_OUTPUTS
+    const ws = wss.find((ws) => ws.id === o.active_workspace);
+    if (ws && now.find((n) => n.name === o.name)?.active_workspace !== ws.id) await msg("workspace-switch", ...workspaceArgs(ws));
+  }
+  const target = opts.restoreFocus ? original : (ended?.id ?? null);
+  if (target && wins.find((w) => w.id === target)?.visible) {
+    await msg("window-focus-warp", target);
+  } else if (opts.restoreFocus && !original) {
+    // The user was on an empty workspace: focus that output again.
+    const home = before.find((o) => o.focused);
+    const ws = home && wss.find((ws) => ws.id === home.active_workspace);
+    if (ws) await msg("workspace-switch", ...workspaceArgs(ws));
+  }
+}

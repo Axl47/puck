@@ -8,6 +8,8 @@ export type DesktopEntry = {
   name: string;
   exec: string;
   wmClass: string | undefined;
+  /** Runs inside a terminal (Terminal=true). */
+  terminal: boolean;
 };
 
 function applicationDirs(): string[] {
@@ -34,7 +36,7 @@ export function parseDesktopEntry(id: string, text: string): DesktopEntry | null
   const exec = fields.get("Exec");
   if (fields.get("Type") !== "Application" || !name || !exec) return null;
   if (fields.get("NoDisplay") === "true" || fields.get("Hidden") === "true") return null;
-  return { id, name, exec, wmClass: fields.get("StartupWMClass") };
+  return { id, name, exec, wmClass: fields.get("StartupWMClass"), terminal: fields.get("Terminal") === "true" };
 }
 
 /** Every launchable app; earlier directories win, as in the XDG spec. */

@@ -10,17 +10,19 @@ export type Arrangement = keyof typeof ARRANGEMENTS;
 
 /**
  * Picks the workspace to arrange `ids` on, so other windows don't crowd them:
- * a workspace on `output` that holds nothing but some of these windows, else an
- * empty one, lowest index first.
+ * a workspace on `output` that holds nothing but the first of these windows
+ * (moved windows are appended, so order then still follows `ids`), else an
+ * empty one: a dynamic workspace before the user's named ones, lowest index first.
  */
 export function pickWorkspace(snap: Pick<Snapshot, "windows" | "workspaces">, output: string, ids: readonly string[]): Workspace {
-  const wanted = new Set(ids);
   const candidates = snap.workspaces.filter((ws) => ws.output === output).sort((a, b) => a.index - b.index);
   const onlyOurs = candidates.find((ws) => {
     const inside = snap.windows.filter((w) => w.workspace === ws.id);
-    return inside.length > 0 && inside.every((w) => wanted.has(w.id));
+    const leading = new Set(ids.slice(0, inside.length));
+    return inside.length > 0 && inside.every((w) => leading.has(w.id));
   });
-  const empty = candidates.find((ws) => ws.window_count === 0);
+  const empty =
+    candidates.find((ws) => ws.window_count === 0 && !ws.named) ?? candidates.find((ws) => ws.window_count === 0);
   const pick = onlyOurs ?? empty;
   if (!pick) {
     throw new Error(`Every workspace on ${output} has other windows; pass \`workspace\` to choose one.`);
