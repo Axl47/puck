@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { type CaptureTarget, capture, captureToFile } from "../capture.ts";
+import { TEXT_MODES, inspect } from "../inspect.ts";
 import { notifications, shellState } from "../noctalia.ts";
 import { type Snapshot, findOutput, findWindow, snapshot } from "../umbriel.ts";
 import { type Register, json } from "./common.ts";
@@ -126,6 +127,37 @@ export const registerObserve: Register = (server, session) => {
     async ({ limit, active_only }) => {
       const all = await notifications();
       return json((active_only ? all.filter((n) => n.active) : all).slice(0, limit));
+    },
+  );
+
+  server.registerTool(
+    "inspect",
+    {
+      title: "Inspect",
+      description:
+        "What is at a region, a window, or a point (default: under the pointer): the pointer position, the window and its process, the page URL for browsers, the accessible element under the point, and the text inside (from the app's accessibility tree when it exposes one, OCR otherwise). " +
+        "A point is inspected through the window holding it. Coordinates are global logical pixels, as desktop_state reports them.",
+      inputSchema: {
+        region: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(),
+        window_id: z.string().optional(),
+        point: z.object({ x: z.number(), y: z.number() }).optional(),
+        text: z.enum(TEXT_MODES).default("auto").describe("auto: accessibility, else OCR; none skips text"),
+        screenshot: z.boolean().default(false).describe("Also save a full-resolution PNG of the target and return its path"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async ({ region, window_id, point, text, screenshot }) => {
+      if ([region, window_id, point].filter((t) => t !== undefined).length > 1) {
+        throw new Error("Pass at most one of region, window_id, point.");
+      }
+      const target = region
+        ? ({ kind: "region", rect: region } as const)
+        : window_id
+          ? ({ kind: "window", id: window_id } as const)
+          : point
+            ? ({ kind: "point", point } as const)
+            : ({ kind: "pointer" } as const);
+      return json(await inspect(target, { text, screenshot: screenshot || undefined }));
     },
   );
 };

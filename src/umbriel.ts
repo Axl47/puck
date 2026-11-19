@@ -184,6 +184,8 @@ export type Focus = {
   show(ws: Workspace): Promise<void>;
   /** Accepts whatever holds focus now as the action's doing (e.g. a window it launched). */
   settle(): Promise<void>;
+  /** The user took over (e.g. moved the mouse): leave focus and the cursor as they are. */
+  abandon(): void;
 };
 
 type FocusOptions = {
@@ -191,6 +193,8 @@ type FocusOptions = {
   restoreFocus: boolean;
   /** Outputs whose visible workspace the action is meant to change. Every other output gets its workspace back. */
   shows?: readonly string[] | "all";
+  /** Runs after focus is put back, still under the lock with focus-follows-mouse paused (e.g. returning the pointer). */
+  cleanup?: () => Promise<void>;
 };
 
 let queue: Promise<unknown> = Promise.resolve();
@@ -220,6 +224,7 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
       await run("umbriel", ["config", "set", FOLLOWS_MOUSE, '"off"']);
 
       let expected = original?.id ?? null;
+      let abandoned = false;
       const focus: Focus = {
         async on(id) {
           await msg("window-focus-warp", id);
@@ -240,18 +245,42 @@ export function withFocus<T>(fn: (focus: Focus) => Promise<T>, opts: FocusOption
         async settle() {
           expected = (await focusedWindow())?.id ?? null;
         },
+        abandon() {
+          abandoned = true;
+        },
       };
 
       try {
         return await fn(focus);
       } finally {
         try {
-          await putBack(original?.id ?? null, before, expected, opts);
+          try {
+            if (!abandoned) await putBack(original?.id ?? null, before, expected, opts);
+          } finally {
+            await opts.cleanup?.();
+          }
         } finally {
           resumeFollowsMouse();
           pausedHere = false;
         }
       }
+    } finally {
+      release();
+    }
+  });
+  queue = task.catch(() => {});
+  return task;
+}
+
+/**
+ * Runs `fn` holding the desktop lock, without touching focus: for pointer
+ * reads and moves, which must not interleave with another Puck's input.
+ */
+export function withDesktopLock<T>(fn: () => Promise<T>): Promise<T> {
+  const task = queue.then(async () => {
+    const release = await lockDesktop();
+    try {
+      return await fn();
     } finally {
       release();
     }

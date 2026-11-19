@@ -3,8 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp, windowHints } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
 import { captureDensity, grimScale } from "../src/capture.ts";
+import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../src/inspect.ts";
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
+import { dragOps, layoutBounds, moveOp, windowAt } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs } from "../src/tools/invasive.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
@@ -208,5 +210,67 @@ describe("PUCK_OUTPUTS", () => {
     expect(() => assertOutputs("PUCK-SBX")).not.toThrow();
     expect(() => assertOutputs("PUCK-SBX", "DP-2")).toThrow(/refusing to change DP-2/);
     expect(() => assertUnrestricted("Changing shell settings")).toThrow(/PUCK_OUTPUTS/);
+  });
+});
+
+describe("pointer geometry", () => {
+  const spotify = snap.windows.find((w) => w.app_id === "Spotify")!;
+
+  it("finds the visible window under a point, on the output there", () => {
+    expect(windowAt(snap, { x: 2000, y: 400 })?.id).toBe(spotify.id); // the hidden T3 window overlaps it
+    expect(windowAt(snap, { x: 100, y: 400 })).toBeNull();
+    // A scrolled-away column keeps `visible` but lies outside its output.
+    const offscreen = { ...spotify, id: "off", output: "HDMI-A-1", x: 1700 };
+    expect(windowAt({ ...snap, windows: [offscreen] }, { x: 2000, y: 400 })).toBeNull();
+  });
+
+  it("prefers floating windows over the tiled ones beneath", () => {
+    const dialog = { ...spotify, id: "dialog", floating: true, x: 1900, y: 300, w: 300, h: 200 };
+    expect(windowAt({ ...snap, windows: [spotify, dialog] }, { x: 2000, y: 400 })?.id).toBe("dialog");
+  });
+
+  it("maps points onto the bounding box of all outputs", () => {
+    expect(layoutBounds(snap.outputs)).toEqual({ x: 0, y: 0, width: 3200, height: 900 });
+    expect(moveOp(snap.outputs, { x: 2000.4, y: 450 })).toEqual({ op: "move", x: 2000, y: 450, width: 3200, height: 900 });
+    expect(moveOp(snap.outputs, { x: 1599.6, y: 0 })).toMatchObject({ x: 1599 }); // stays on HDMI-A-1
+    expect(() => moveOp(snap.outputs, { x: 4000, y: 10 })).toThrow(/no output/);
+  });
+
+  it("drags from press to release through intermediate motion", () => {
+    const ops = dragOps(snap.outputs, { x: 100, y: 100 }, { x: 300, y: 500 }, "left", 4);
+    expect(ops[0]).toEqual({ op: "button", button: "left", state: "press" });
+    expect(ops.at(-1)).toEqual({ op: "button", button: "left", state: "release" });
+    const moves = ops.filter((o) => o.op === "move");
+    expect(moves.map((m) => [m.x, m.y])).toEqual([
+      [150, 200],
+      [200, 300],
+      [250, 400],
+      [300, 500],
+    ]);
+  });
+});
+
+describe("inspect", () => {
+  it("parses regions and points", () => {
+    expect(parseRegion("10,-20,300x40")).toEqual({ x: 10, y: -20, width: 300, height: 40 });
+    expect(parsePoint(" 1600.5,0 ")).toEqual({ x: 1600.5, y: 0 });
+    expect(() => parseRegion("10,20,0x40")).toThrow(/empty/);
+    expect(() => parseRegion("10,20 300x40")).toThrow(/X,Y,WxH/);
+  });
+
+  it("reads process start time from /proc, past a command name with spaces and parens", () => {
+    // /proc/<pid>/stat: pid, (comm), then state (field 3) … starttime (field 22) in ticks.
+    const fields = Array.from({ length: 50 }, (_, i) => (i === 0 ? "S" : i === 19 ? "12345" : "0"));
+    const started = processStartedAt(`4242 (Web Content (x)) ${fields.join(" ")}`, 1_700_000_000);
+    expect(started.toISOString()).toBe(new Date((1_700_000_000 + 123.45) * 1000).toISOString());
+  });
+
+  it("uses accessibility text when it covers the target, OCR otherwise", () => {
+    expect(chooseTextSource("auto", "Pricing", true)).toBe("accessibility");
+    expect(chooseTextSource("auto", "  ", true)).toBe("ocr");
+    expect(chooseTextSource("auto", "Pricing", false)).toBe("ocr"); // region spills past the window
+    expect(chooseTextSource("auto", null, true)).toBe("ocr");
+    expect(chooseTextSource("ocr", "Pricing", true)).toBe("ocr");
+    expect(chooseTextSource("none", "Pricing", true)).toBe("none");
   });
 });
