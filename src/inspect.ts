@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, readlinkSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type CaptureTarget, captureToFile } from "./capture.ts";
+import { type CaptureTarget, captureNative, captureToFile } from "./capture.ts";
 import { run } from "./exec.ts";
+import { cleanForOcr, darkOnLight, digitZeros, parsePnm, toPgm } from "./ocr.ts";
 import {
   type Point,
   type Rect,
@@ -92,16 +93,51 @@ const AccessibilitySchema = z.object({
 });
 type Accessibility = z.infer<typeof AccessibilitySchema>;
 
+const A11Y_STATUS = ["org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled"];
+
+/**
+ * Switches AT-SPI on when it's off (the gsettings key doesn't guarantee it, and
+ * it can reset at login); returns whether it had to.
+ */
+async function ensureAccessibility(): Promise<boolean> {
+  if ((await run("busctl", ["--user", "get-property", ...A11Y_STATUS])).trim() === "b true") return false;
+  await run("busctl", ["--user", "set-property", ...A11Y_STATUS, "b", "true"]);
+  return true;
+}
+
 /** `clip`: keep only the text inside `rect` (a region), rather than all text of the nodes it touches. */
-async function readAccessibility(w: Window, point: Point | null, rect: Rect | null, clip: boolean): Promise<Accessibility> {
-  const request = { pid: w.pid, title: w.title, window: windowRect(w), point, rect, text: rect !== null, clip };
+async function readAccessibility(w: Window, scale: number, point: Point | null, rect: Rect | null, clip: boolean): Promise<Accessibility> {
+  const request = { pid: w.pid, title: w.title, window: windowRect(w), scale, point, rect, text: rect !== null, clip };
   return AccessibilitySchema.parse(JSON.parse(await run("python3", [helperPath("a11y.py"), JSON.stringify(request)])));
 }
 
-async function ocr(image: string): Promise<string> {
-  const text = await run("tesseract", [image, "stdout", "-l", "eng"], { timeoutMs: 30_000 });
-  return text.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+/**
+ * OCR of the target at the output's native pixels: grayscale, dark text on
+ * light, ruling lines and zero slashes painted over, then `O` beside digits
+ * read as zero. A terminal's screen, or anything holding a ruled grid (a
+ * table), is read as one block, row by row: tesseract's own page layout reads
+ * their columns one after another and garbles short lines (`line 1`…`line 9`).
+ * Otherwise tesseract finds the layout, so a page's columns stay apart. Each
+ * step measurably helped on captures from this machine (DESIGN.md, "OCR").
+ */
+async function ocr(target: CaptureTarget, terminal: boolean): Promise<string> {
+  const img = parsePnm(await captureNative(target, "ppm"));
+  darkOnLight(img);
+  const { grid } = cleanForOcr(img);
+  const block = terminal || grid;
+  const dir = mkdtempSync(join(tmpdir(), "puck-ocr-"));
+  try {
+    const file = join(dir, "target.pgm");
+    writeFileSync(file, toPgm(img));
+    const text = await run("tesseract", [file, "stdout", "-l", "eng", ...(block ? ["--psm", "6"] : [])], { timeoutMs: 30_000 });
+    return digitZeros(text.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
+
+/** App ids of terminal emulators, whose screens OCR reads as a uniform block. */
+const TERMINAL = /^(foot|footclient|kitty|alacritty|com\.mitchellh\.ghostty|org\.wezfurlong\.wezterm|org\.kde\.konsole|org\.gnome\.(console|terminal)|xterm|urxvt)$/i;
 
 /** Whether `inner` lies within `outer`, give or take a border. */
 const within = (inner: Rect, outer: Rect, slack = 2) =>
@@ -167,8 +203,13 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
   const wantA11yText = opts.text === "auto" || opts.text === "accessibility";
   let a11y: Accessibility | null = null;
   if (win) {
+    const switched = await ensureAccessibility().catch((err: unknown) => {
+      errors.push(`accessibility: couldn't check AT-SPI is on: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    });
+    if (switched) errors.push("accessibility: AT-SPI was off and is now on; Chromium-based browsers expose pages only after a restart");
     try {
-      a11y = await readAccessibility(win, point, wantA11yText ? rect : null, target.kind === "region");
+      a11y = await readAccessibility(win, output.scale, point, wantA11yText ? rect : null, target.kind === "region");
       if (!a11y.found) errors.push(`accessibility: ${win.app_id} isn't on the accessibility bus`);
       if (a11y.truncated) errors.push("accessibility: tree too large; text and element may be incomplete");
       if (a11y.partial && opts.text === "accessibility") errors.push("accessibility: text crossing the region's edge couldn't be cut to it and is included whole");
@@ -196,19 +237,8 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
     screenshot = (await captureToFile(capture, path).catch(failed("screenshot"))) ?? null;
   }
   if (source === "ocr") {
-    if (screenshot) {
-      content = (await ocr(screenshot).catch(failed("ocr"))) ?? "";
-    } else {
-      const ocrTemp = async () => {
-        const dir = mkdtempSync(join(tmpdir(), "puck-inspect-"));
-        try {
-          return await ocr(await captureToFile(capture, join(dir, "target.png")));
-        } finally {
-          rmSync(dir, { recursive: true, force: true });
-        }
-      };
-      content = (await ocrTemp().catch(failed("ocr"))) ?? "";
-    }
+    const terminal = win !== null && TERMINAL.test(win.app_id) && within(rect, windowRect(win));
+    content = (await ocr(capture, terminal).catch(failed("ocr"))) ?? "";
   }
 
   const focusedId = snap.focused?.id;

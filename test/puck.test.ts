@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp, windowHints } from "../src/apps.ts";
@@ -6,11 +7,12 @@ import { captureDensity, grimScale } from "../src/capture.ts";
 import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../src/inspect.ts";
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
-import { dragOps, layoutBounds, moveOp, windowAt } from "../src/pointer.ts";
+import { cleanForOcr, darkOnLight, digitZeros, parsePnm } from "../src/ocr.ts";
+import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
-import { chordArgs } from "../src/tools/invasive.ts";
+import { chordArgs, overlayKeysRefusal } from "../src/keys.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
-import { type Snapshot, parseOutputs, parseWindows, parseWorkspaces } from "../src/umbriel.ts";
+import { type Layer, type Snapshot, parseOutputs, parseWindows, parseWorkspaces } from "../src/umbriel.ts";
 
 // Real `umbriel … --json` output captured on gaia-arch.
 const fixture = (name: string) => JSON.parse(readFileSync(new URL(`fixtures/${name}.json`, import.meta.url), "utf8")) as unknown;
@@ -272,5 +274,110 @@ describe("inspect", () => {
     expect(chooseTextSource("auto", null, true)).toBe("ocr");
     expect(chooseTextSource("ocr", "Pricing", true)).toBe("ocr");
     expect(chooseTextSource("none", "Pricing", true)).toBe("none");
+  });
+});
+
+describe("onScreen", () => {
+  const spotify = snap.windows.find((w) => w.app_id === "Spotify")!; // DP-2:6, shown on DP-2 (x 1600–3200)
+  const t3 = snap.windows.find((w) => w.app_id === "com.t3tools.T3Code")!; // DP-2:8, not shown
+
+  it("clips a shown window to its output", () => {
+    expect(onScreen(spotify, snap.outputs)).toEqual({ x: 1692, y: spotify.y, width: 1417, height: spotify.h });
+    expect(onScreen({ ...spotify, x: 3123 }, snap.outputs)).toMatchObject({ x: 3123, width: 77 }); // a column's edge
+  });
+
+  it("is null for hidden workspaces, scrolled-away columns and minimized windows", () => {
+    expect(onScreen(t3, snap.outputs)).toBeNull();
+    expect(onScreen({ ...spotify, x: -1340 }, snap.outputs)).toBeNull();
+    expect(onScreen({ ...spotify, x: 3292 }, snap.outputs)).toBeNull(); // past DP-2's right edge
+    expect(onScreen({ ...spotify, minimized: true }, snap.outputs)).toBeNull();
+  });
+
+  it("is in the desktop view with whether the workspace is shown", () => {
+    const view = describeDesktop(snap, new Set());
+    expect(view.windows.find((w) => w.id === t3.id)).toMatchObject({ output: "DP-2", workspace_active: false, on_screen: null });
+    expect(view.windows.find((w) => w.id === spotify.id)).toMatchObject({ workspace_active: true, on_screen: { x: 1692 } });
+  });
+});
+
+describe("input into overlays", () => {
+  // slurp open on every output (keyboard on DP-2's surface), captured live with the shell's bars.
+  const selection = fixture("layers-selection") as Layer[];
+  const panels = fixture("layers") as Layer[];
+  const onSbx = { x: 3500, y: 300 };
+
+  it("refuses while a shell surface has the keyboard, unless it's the named overlay", () => {
+    expect(inputRefusal(selection, undefined, [onSbx])).toMatch(/selection.*nothing was sent/);
+    expect(inputRefusal(selection, "selection", [onSbx, { x: 100, y: 800 }])).toBeNull();
+    expect(inputRefusal(selection, "launcher", [onSbx])).toMatch(/selection has the keyboard, not launcher/);
+  });
+
+  it("refuses an overlay that isn't open, or points off it", () => {
+    expect(inputRefusal(panels, undefined, [onSbx])).toBeNull();
+    expect(inputRefusal(panels, "selection", [onSbx])).toMatch(/No selection overlay is open/);
+    expect(inputRefusal(selection, "selection", [{ x: 5000, y: 300 }])).toMatch(/5000,300 isn't on the selection overlay/);
+  });
+
+  it("sends keys only to the overlay holding the keyboard, on an allowed output", () => {
+    expect(overlayKeysRefusal(selection, "selection", null)).toBeNull();
+    expect(overlayKeysRefusal(selection, "selection", ["PUCK-SBX"])).toBeNull(); // same client, keyboard on DP-2
+    expect(overlayKeysRefusal(selection, "selection", ["NOWHERE"])).toMatch(/isn't on NOWHERE/);
+    expect(overlayKeysRefusal(selection, "launcher", null)).toMatch(/not launcher/);
+    expect(overlayKeysRefusal(panels, "selection", null)).toMatch(/No shell surface has the keyboard/);
+  });
+});
+
+describe("OCR preparation", () => {
+  // Rows captured from foot (Iosevka, dark theme, 1.6 scale) and a bordered table in Helium.
+  const image = (name: string) => {
+    const img = parsePnm(readFileSync(new URL(`fixtures/${name}.pgm`, import.meta.url)));
+    darkOnLight(img);
+    return img;
+  };
+
+  it("parses grim's PPM as luma", () => {
+    const ppm = Buffer.concat([Buffer.from("P6\n2 1\n255\n"), Buffer.from([255, 255, 255, 0, 0, 255])]);
+    expect(parsePnm(ppm)).toEqual({ width: 2, height: 1, data: new Uint8Array([255, 29]) });
+  });
+
+  it("inverts light text on dark only", () => {
+    const img = parsePnm(Buffer.concat([Buffer.from("P5\n4 1\n255\n"), Buffer.from([10, 10, 10, 240])]));
+    expect(darkOnLight(img)).toBe(true);
+    expect([...img.data]).toEqual([245, 245, 245, 15]);
+    expect(darkOnLight(img)).toBe(false);
+  });
+
+  it("plains slashed zeros and nothing that looks like one", () => {
+    expect(cleanForOcr(image("ocr-zeros"))).toMatchObject({ zeros: 2 }); // error[E0308]
+    // BUILD 88B8 OK: 0x0B80 0xBEEF 0x8008 vitest@5.1.1 @types/node: seven zeros, and 8, B, @ kept
+    expect(cleanForOcr(image("ocr-lookalikes"))).toEqual({ grid: false, rules: 0, zeros: 7 });
+  });
+
+  it("paints out a table's grid", () => {
+    const img = image("ocr-table");
+    expect(cleanForOcr(img)).toMatchObject({ grid: true, rules: 1 });
+    expect(cleanForOcr(img)).toMatchObject({ grid: false, rules: 0 }); // nothing left to find
+  });
+
+  it("reads O as zero only where a digit belongs", () => {
+    expect(digitZeros("error[EO308] at 0xOB80, OxBEEF; 1O24 bytes")).toBe("error[E0308] at 0x0B80, 0xBEEF; 1024 bytes");
+    expect(digitZeros("CO2 OK Ox O2 NOVEMBER")).toBe("CO2 OK Ox O2 NOVEMBER");
+  });
+});
+
+describe("accessibility coordinates", () => {
+  // helpers/a11y.py's mapping, with extents Helium reported for a table cell on a 1.6-scale output.
+  const py = (expr: string) =>
+    JSON.parse(execFileSync("python3", ["-c", `import json, sys; sys.path.insert(0, ${JSON.stringify(helperPath(""))}); import a11y; print(json.dumps(${expr}))`], { encoding: "utf8" }));
+  const win = '{"x": 3292, "y": 46, "width": 1418, "height": 843}';
+
+  it("maps Chromium's physical page pixels to logical ones", () => {
+    expect(py(`a11y.document_scale(2269, 1418, 1.6)`)).toBe(0.625);
+    expect(py(`a11y.to_global((308, 405, 210, 78), ${win}, (0, 0), (0.625, 0.625))`)).toEqual([3484.5, 299.125, 131.25, 48.75]);
+  });
+
+  it("keeps a document that reports logical pixels (Firefox) as is", () => {
+    expect(py(`a11y.document_scale(1418, 1418, 1.6)`)).toBe(1);
+    expect(py(`a11y.document_scale(1380, 1418, 1.6)`)).toBe(1);
   });
 });

@@ -1,85 +1,9 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
+import { type KeyTarget, focusForInput, pressKeys } from "../keys.ts";
 import { BUTTONS, clickOps, dragOps, movePointer, pointerInput } from "../pointer.ts";
-import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, snapshot, withFocus } from "../umbriel.ts";
+import { findWindow, msg, snapshot, withFocus } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
-
-const MODIFIERS: Record<string, string> = {
-  ctrl: "ctrl",
-  control: "ctrl",
-  shift: "shift",
-  alt: "alt",
-  altgr: "altgr",
-};
-
-/** Super chords and taps are compositor keybinds (close window, lock, launcher), not app input. */
-const COMPOSITOR_MODIFIERS = new Set(["super", "meta", "logo", "win", "mod"]);
-const COMPOSITOR_KEY = /^(super|meta|hyper)(_[lr])?$/i;
-
-const KEY_ALIASES: Record<string, string> = {
-  enter: "Return",
-  return: "Return",
-  esc: "Escape",
-  escape: "Escape",
-  tab: "Tab",
-  space: "space",
-  backspace: "BackSpace",
-  delete: "Delete",
-  up: "Up",
-  down: "Down",
-  left: "Left",
-  right: "Right",
-  home: "Home",
-  end: "End",
-  pageup: "Prior",
-  pagedown: "Next",
-};
-
-/** wtype arguments for one chord like `ctrl+shift+t` or `Return`. */
-export function chordArgs(chord: string): string[] {
-  const parts = chord.split("+").map((p) => p.trim()).filter(Boolean);
-  const key = parts.pop();
-  if (!key) throw new Error(`Empty key chord "${chord}".`);
-  if (COMPOSITOR_KEY.test(key)) {
-    throw new Error(`"${chord}" would trigger a desktop shortcut, not reach the app; Puck doesn't send super keys.`);
-  }
-  const mods = parts.map((p) => {
-    if (COMPOSITOR_MODIFIERS.has(p.toLowerCase())) {
-      throw new Error(`"${chord}" would trigger a desktop shortcut, not reach the app; Puck doesn't send super chords.`);
-    }
-    const m = MODIFIERS[p.toLowerCase()];
-    if (!m) throw new Error(`Unknown modifier "${p}" in "${chord}". Use ctrl, shift, alt or altgr.`);
-    return m;
-  });
-  const keysym = KEY_ALIASES[key.toLowerCase()] ?? (/^f\d{1,2}$/i.test(key) ? key.toUpperCase() : key);
-  return [...mods.flatMap((m) => ["-M", m]), "-k", keysym, ...mods.toReversed().flatMap((m) => ["-m", m])];
-}
-
-/**
- * Focuses the window (focus.on confirms it holds focus) before any input is
- * sent. Returns a check to run between inputs: focus may stay on the window or
- * move to one the input opened (a new window, or the same app's, e.g. a save
- * dialog), but focus on another existing window means the user clicked
- * elsewhere, so input stops there.
- */
-async function focusForInput(focus: Focus, windowId: string) {
-  const snap = await snapshot();
-  const target = findWindow(snap, windowId);
-  assertOutputs(target.output);
-  const grab = await keyboardGrab();
-  if (grab) {
-    throw new Error(`A shell surface (${grab.namespace} on ${grab.output}) has the keyboard, so input wouldn't reach the window; nothing was sent.`);
-  }
-  await focus.on(windowId);
-  const before = new Set(snap.windows.map((w) => w.id));
-  const ours = (w: Window) => w.id === target.id || w.pid === target.pid || !before.has(w.id);
-  /** `done` describes the input sent so far; null after the last input, when there's nothing left to stop. */
-  return async (done: string | null) => {
-    const now = await focusedWindow();
-    if (now && ours(now)) return focus.settle();
-    if (done !== null) throw new Error(`Focus moved to another window; stopped after ${done}.`);
-  };
-}
 
 const TYPE_CHUNK = 64;
 
@@ -171,27 +95,23 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Press keys",
       description:
-        "Focus a window and press key chords in order, e.g. ['ctrl+l', 'Return']. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr.",
-      inputSchema: { window_id: z.string(), keys: z.array(z.string()).min(1).max(50) },
+        "Press key chords in order, e.g. ['ctrl+l', 'Return'], into a window (focused first, then given back) or into a shell overlay that has the keyboard. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr.",
+      inputSchema: {
+        window_id: z.string().optional(),
+        overlay: overlayParam.describe(
+          "Instead of window_id: the layer-shell namespace of a shell overlay that has the keyboard and should get the keys, e.g. 'selection' for slurp's picker. Refused if a different surface has the keyboard.",
+        ),
+        keys: z.array(z.string()).min(1).max(50),
+      },
       annotations: { destructiveHint: true },
     },
-    async ({ window_id, keys }) =>
-      withFocus(
-        async (focus) => {
-          const args = keys.map(chordArgs); // validate everything before focusing
-          const check = await focusForInput(focus, window_id);
-          for (const [i, a] of args.entries()) {
-            if (i > 0) await check(keys.slice(0, i).join(", "));
-            await run("wtype", a);
-          }
-          await check(null);
-          return json({ pressed: keys });
-        },
-        { restoreFocus: true },
-      ),
+    async ({ window_id, overlay, keys }) => json(await pressKeys(keyTarget(window_id, overlay), keys)),
   );
 
   const point = z.object({ x: z.number(), y: z.number() });
+  const overlay = overlayParam.describe(
+    "Layer-shell namespace of a shell overlay you mean to click into, e.g. 'selection' for slurp's picker. By default input is refused while a shell surface has the keyboard; with this, it goes ahead only if that overlay is open under every point.",
+  );
   const pointerNote = " Coordinates are global logical pixels, as desktop_state reports them. Afterwards the pointer and the user's focus go back where they were.";
 
   server.registerTool(
@@ -215,10 +135,11 @@ export const registerInvasive: Register = (server, session) => {
         y: z.number().optional(),
         button: z.enum(BUTTONS).default("left"),
         count: z.number().int().min(1).max(3).default(1),
+        overlay,
       },
       annotations: { destructiveHint: true },
     },
-    async ({ x, y, button, count }) => json(await pointerInput(pointOrNull(x, y), () => clickOps(button, count))),
+    async ({ x, y, button, count, overlay }) => json(await pointerInput(pointOrNull(x, y), () => clickOps(button, count), { overlay })),
   );
 
   server.registerTool(
@@ -226,10 +147,10 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Drag",
       description: "Press at one point, move to another, and release." + pointerNote,
-      inputSchema: { from: point, to: point, button: z.enum(BUTTONS).default("left") },
+      inputSchema: { from: point, to: point, button: z.enum(BUTTONS).default("left"), overlay },
       annotations: { destructiveHint: true },
     },
-    async ({ from, to, button }) => json(await pointerInput(from, (outs) => dragOps(outs, from, to, button))),
+    async ({ from, to, button, overlay }) => json(await pointerInput(from, (outs) => dragOps(outs, from, to, button), { overlay })),
   );
 
   server.registerTool(
@@ -242,12 +163,22 @@ export const registerInvasive: Register = (server, session) => {
         y: z.number().optional(),
         dx: z.number().int().min(-50).max(50).default(0),
         dy: z.number().int().min(-50).max(50).default(0),
+        overlay,
       },
       annotations: { destructiveHint: true },
     },
-    async ({ x, y, dx, dy }) => json(await pointerInput(pointOrNull(x, y), () => [{ op: "scroll", dx, dy }])),
+    async ({ x, y, dx, dy, overlay }) => json(await pointerInput(pointOrNull(x, y), () => [{ op: "scroll", dx, dy }], { overlay })),
   );
 };
+
+const overlayParam = z.string().min(1).optional();
+
+/** A key target from press_keys' parameters: exactly one of a window and an overlay. */
+function keyTarget(windowId: string | undefined, overlay: string | undefined): KeyTarget {
+  if (windowId !== undefined && overlay === undefined) return { window: windowId };
+  if (overlay !== undefined && windowId === undefined) return { overlay };
+  throw new Error("Pass exactly one of window_id and overlay.");
+}
 
 /** A point from optional coordinates: both or neither. */
 function pointOrNull(x: number | undefined, y: number | undefined) {

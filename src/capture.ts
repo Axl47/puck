@@ -42,10 +42,14 @@ export async function capture(t: CaptureTarget): Promise<Capture> {
   return { data, mimeType: "image/jpeg", width: Math.round(t.width * d), height: Math.round(t.height * d) };
 }
 
+/** Full-resolution (the output's own pixels) image bytes; PPM is raw pixels, for Puck's own processing. */
+export function captureNative(t: CaptureTarget, type: "png" | "ppm"): Promise<Buffer> {
+  return runBinary("grim", [...grimArgs(t), "-s", grimScale(t, captureDensity(t, true)).toFixed(4), "-t", type, "-"]);
+}
+
 /** Full-resolution PNG saved at `path` (default: under Puck's state dir); returns its absolute path. */
 export async function captureToFile(t: CaptureTarget, path?: string): Promise<string> {
-  const s = grimScale(t, captureDensity(t, true));
-  const data = await runBinary("grim", [...grimArgs(t), "-s", s.toFixed(4), "-t", "png", "-"]);
+  const data = await captureNative(t, "png");
   const dest = resolve(path ?? join(stateDir(), "screenshots", `${new Date().toISOString().replace(/[:.]/g, "-")}-${t.kind}.png`));
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, data);

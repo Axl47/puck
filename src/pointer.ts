@@ -1,8 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { run } from "./exec.ts";
+import { run, sleep } from "./exec.ts";
 import { assertOutputs } from "./scope.ts";
-import { type Output, type Window, keyboardGrab, outputs, withDesktopLock, withFocus } from "./umbriel.ts";
+import { type Layer, type Output, type Window, layers, outputs, withDesktopLock, withFocus } from "./umbriel.ts";
 
 // Pointer reading and input. Umbriel's IPC has neither, so both go through
 // helpers/wl.py, a small Wayland client (see its docstring).
@@ -19,6 +19,27 @@ export const contains = (r: Rect, p: Point) => p.x >= r.x && p.x < r.x + r.width
 
 export const outputRect = (o: Output): Rect => ({ x: o.position.x, y: o.position.y, ...o.logical_size });
 export const windowRect = (w: Window): Rect => ({ x: w.x, y: w.y, width: w.w, height: w.h });
+
+/** The overlap of two rectangles, or null when they don't meet. */
+export function intersect(a: Rect, b: Rect): Rect | null {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const width = Math.min(a.x + a.width, b.x + b.width) - x;
+  const height = Math.min(a.y + a.height, b.y + b.height) - y;
+  return width > 0 && height > 0 ? { x, y, width, height } : null;
+}
+
+/**
+ * The part of a window actually on screen: its rectangle clipped to its own
+ * output, or null when its workspace isn't the one shown there, it's minimized,
+ * or it lies off the output (a scrolled-away column). Umbriel's `visible` stays
+ * true for scrolled-away columns, so callers drawing windows use this.
+ */
+export function onScreen(w: Window, outs: readonly Output[]): Rect | null {
+  const out = outs.find((o) => o.enabled && o.name === w.output);
+  if (!out || out.active_workspace !== w.workspace || w.minimized || w.scratchpad !== "") return null;
+  return intersect(windowRect(w), outputRect(out));
+}
 
 /** The enabled output a point is on, if any. */
 export const outputAt = (outs: readonly Output[], p: Point) => outs.find((o) => o.enabled && contains(outputRect(o), p)) ?? null;
@@ -126,23 +147,62 @@ export async function movePointer(p: Point): Promise<Point> {
   });
 }
 
+/** Waits up to a second for every surface of an overlay to unmap; returns whether they did. */
+async function overlayClosed(namespace: string): Promise<boolean> {
+  for (let waited = 0; waited <= 1000; waited += 50) {
+    if (!(await layers()).some((l) => l.mapped && l.namespace === namespace)) return true;
+    await sleep(50);
+  }
+  return false;
+}
+
+const layerRect = (l: Layer): Rect => ({ x: l.x, y: l.y, width: l.w, height: l.h });
+
+/**
+ * Why pointer input at `points` must not be sent, or null to go ahead. By
+ * default a shell surface holding the keyboard (launcher, panel, picker) would
+ * take the input meant for a window, so it refuses. `overlay` names the
+ * layer-shell namespace the caller means to click into (`selection` for slurp):
+ * then a different surface holding the keyboard still refuses, and every point
+ * must be on a mapped surface of that namespace.
+ */
+export function inputRefusal(all: readonly Layer[], overlay: string | undefined, points: readonly Point[]): string | null {
+  const grab = all.find((l) => l.mapped && l.focused);
+  if (!overlay) return grab ? `A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.` : null;
+  if (grab && grab.namespace !== overlay) return `${grab.namespace} has the keyboard, not ${overlay}; nothing was sent.`;
+  const surfaces = all.filter((l) => l.mapped && l.namespace === overlay);
+  if (!surfaces.length) return `No ${overlay} overlay is open; nothing was sent.`;
+  const off = points.find((p) => !surfaces.some((l) => contains(layerRect(l), p)));
+  return off ? `${off.x},${off.y} isn't on the ${overlay} overlay; nothing was sent.` : null;
+}
+
 /**
  * Runs pointer input at `at` (the current position when null), then puts the
  * user's focus and the pointer back. Holds the desktop lock with
  * focus-follows-mouse paused, refuses while a shell panel is open (it would take
- * the input), and checks the pointer landed before pressing anything, so a user
- * moving the mouse stops it. PUCK_OUTPUTS must allow every point the input
- * reaches, a drag's glide included.
+ * the input) unless it's the `overlay` the caller names, and checks the pointer
+ * landed before pressing anything, so a user moving the mouse stops it.
+ * PUCK_OUTPUTS must allow every point the input reaches, a drag's glide
+ * included. Input into an overlay usually closes it (a picker returns its
+ * pick), and the compositor then focuses whatever is under the pointer, so
+ * once it has closed the user's focus is put back as usual; while it stays
+ * open it keeps the keyboard and focus is left alone. The pointer goes back
+ * either way.
  */
-export async function pointerInput(at: Point | null, input: (outs: readonly Output[]) => readonly PointerOp[]) {
+export async function pointerInput(
+  at: Point | null,
+  input: (outs: readonly Output[]) => readonly PointerOp[],
+  opts: { overlay?: string | undefined } = {},
+) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
   const ops = input(outs); // encoded against the same layout that's checked
   const b = layoutBounds(outs);
   const waypoints = ops.flatMap((o) => (o.op === "move" ? [{ x: o.x + b.x, y: o.y + b.y }] : [])); // e.g. a drag's glide
-  assertPoints(outs, [at ?? (await pointerPosition(outs)), ...waypoints]);
-  const grab = await keyboardGrab();
-  if (grab) throw new Error(`A shell panel (${grab.namespace}) is open and would take the input; nothing was sent.`);
+  const points = [at ?? (await pointerPosition(outs)), ...waypoints];
+  assertPoints(outs, points);
+  const refusal = inputRefusal(await layers(), opts.overlay, points);
+  if (refusal) throw new Error(refusal);
 
   let home: Point | undefined;
   return withFocus(
@@ -166,6 +226,7 @@ export async function pointerInput(at: Point | null, input: (outs: readonly Outp
         );
       }
       await pointerAct(ops);
+      if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard
       await focus.settle(); // a click focuses what it hit; withFocus then hands focus back
       return { at: target };
     },

@@ -3,7 +3,7 @@
 
   a11y.py '<json request>'
 
-Request: {"pid": n, "title": s, "window": {x, y, width, height},
+Request: {"pid": n, "title": s, "window": {x, y, width, height}, "scale": output scale,
           "point": {x, y} | null, "rect": {x, y, width, height} | null, "text": bool,
           "clip": bool (keep only text inside rect)}
 in global logical coordinates, as Umbriel reports them.
@@ -11,8 +11,12 @@ Prints {"found": bool, "url": s | null, "element": {...} | null, "text": s | nul
 
 On Wayland, apps report extents relative to their own window, so boxes are
 mapped through the window's geometry: offset by the frame's origin (client-side
-shadows), and, outside web documents, scaled by window size / frame size
-(Chromium's UI reports at its own scale while its page content doesn't).
+shadows), and scaled. Outside web documents the scale is window size / frame
+size (Chromium's UI reports at its own scale). A web document reports either
+logical pixels (Firefox) or the output's physical pixels (Chromium, which then
+reports a document larger than the window); the latter are divided by the
+output scale. Each node is walked with its scale: None in the UI, a number
+inside a document.
 """
 import json
 import sys
@@ -38,9 +42,10 @@ class Budget(Exception):
 
 
 class Tree:
-    def __init__(self, frame, window):
+    def __init__(self, frame, window, scale):
         self.frame = frame
         self.window = window
+        self.output_scale = scale or 1
         fx, fy, fw, fh = extents(frame) or (0, 0, window["width"], window["height"])
         self.origin = (fx, fy)
         self.ui_scale = (window["width"] / fw if fw > 0 else 1, window["height"] / fh if fh > 0 else 1)
@@ -54,18 +59,19 @@ class Tree:
         if self.visited > NODE_BUDGET or time.monotonic() > self.deadline:
             raise Budget()
 
+    def scale(self, in_doc):
+        return (in_doc, in_doc) if in_doc else self.ui_scale
+
+    def doc_scale(self, doc):
+        e = extents(doc)
+        return document_scale(e[2] if e else 0, self.window["width"], self.output_scale)
+
     def box(self, node, in_doc):
         """The node's box in global logical coordinates, or None when it reports none."""
         e = extents(node)
         if not e or e[2] <= 0 or e[3] <= 0:
             return None
-        sx, sy = (1, 1) if in_doc else self.ui_scale
-        return (
-            self.window["x"] + (e[0] - self.origin[0]) * sx,
-            self.window["y"] + (e[1] - self.origin[1]) * sy,
-            e[2] * sx,
-            e[3] * sy,
-        )
+        return to_global(e, self.window, self.origin, self.scale(in_doc))
 
     def children(self, node, in_doc, within):
         """Showing children whose box meets `within` (or that report none), in document order."""
@@ -77,7 +83,7 @@ class Tree:
             states = safe(child.get_state_set)
             if states is None or not states.contains(S.SHOWING):
                 continue
-            child_doc = in_doc or safe(child.get_role) in DOCUMENT_ROLES
+            child_doc = in_doc or (self.doc_scale(child) if safe(child.get_role) in DOCUMENT_ROLES else None)
             box = self.box(child, child_doc)
             if box is not None and not intersects(box, within):
                 continue
@@ -119,7 +125,7 @@ class Tree:
         place the corners, all of it, flagged partial (auto then uses OCR).
         (Atspi.Text.get_bounded_ranges would be exact but crashes libatspi.)
         """
-        sx, sy = (1, 1) if in_doc else self.ui_scale
+        sx, sy = self.scale(in_doc)
         raw = lambda gx, gy: (
             int(self.origin[0] + (gx - self.window["x"]) / sx),
             int(self.origin[1] + (gy - self.window["y"]) / sy),
@@ -166,6 +172,20 @@ class Tree:
         return None
 
 
+def document_scale(doc_width, window_width, output_scale):
+    """
+    The factor from a web document's extents to logical pixels: a document
+    wider than its window reports physical pixels (Chromium), else logical.
+    """
+    return 1 / output_scale if doc_width > window_width * 1.05 else 1.0
+
+
+def to_global(e, window, origin, scale):
+    """An extent (x, y, w, h) reported relative to the window, in global logical coordinates."""
+    sx, sy = scale
+    return (window["x"] + (e[0] - origin[0]) * sx, window["y"] + (e[1] - origin[1]) * sy, e[2] * sx, e[3] * sy)
+
+
 def safe(fn, default=None):
     try:
         return fn()
@@ -183,8 +203,14 @@ def intersects(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-def inside(a, b):
-    return a[0] >= b[0] and a[1] >= b[1] and a[0] + a[2] <= b[0] + b[2] and a[1] + a[3] <= b[1] + b[3]
+def inside(a, b, slack=2):
+    """Whether box a lies within b, give or take `slack` (rounding in apps' extents)."""
+    return (
+        a[0] >= b[0] - slack
+        and a[1] >= b[1] - slack
+        and a[0] + a[2] <= b[0] + b[2] + slack
+        and a[1] + a[3] <= b[1] + b[3] + slack
+    )
 
 
 def node_text(node):
@@ -219,12 +245,12 @@ def find_frame(req):
 
 
 def read(frame, req, result):
-    tree = Tree(frame, req["window"])
+    tree = Tree(frame, req["window"], req.get("scale"))
     tree.clip = bool(req.get("clip"))
     try:
         result["url"] = tree.url()
         if req.get("point"):
-            hit = tree.element_at(frame, False, req["point"])
+            hit = tree.element_at(frame, None, req["point"])
             if hit:
                 node, _, (x, y, w, h) = hit
                 result["element"] = {
@@ -240,7 +266,7 @@ def read(frame, req, result):
             r = req["rect"]
             out = []
             try:
-                tree.text_in(frame, False, (r["x"], r["y"], r["width"], r["height"]), out)
+                tree.text_in(frame, None, (r["x"], r["y"], r["width"], r["height"]), out)
             finally:
                 result["text"] = "\n".join(out)
                 if tree.partial:
