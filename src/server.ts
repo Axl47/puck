@@ -20,10 +20,13 @@ export function createServer(): McpServer {
         "There, actions move the user's cursor onto the window they act on; batch them.",
     },
   );
-  // Every tool call acts on one desktop, chosen as it starts. The SDK types a
-  // handler by its tool's schema, so the wrapper is put back to that type.
+  // Every tool call acts on one desktop, chosen as it starts; desktop_state
+  // chooses for itself, after the switch it may carry, so it can leave a ward
+  // desktop that doesn't start. The SDK types a handler by its tool's schema, so
+  // the wrapper is put back to that type.
   const registerTool = server.registerTool.bind(server);
   server.registerTool = ((name, config, handler) => {
+    if (name === "desktop_state") return registerTool(name, config, handler);
     const call = handler as (...args: unknown[]) => unknown;
     return registerTool(name, config, ((...args: unknown[]) => onDesktop(() => call(...args))) as typeof handler);
   }) as typeof registerTool;

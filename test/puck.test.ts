@@ -452,6 +452,7 @@ describe("which desktop", () => {
   const ward = "printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'";
 
   it("follows the ward's desktop only when told to, and takes its whole environment", async () => {
+    vi.stubEnv("AT_SPI_BUS_ADDRESS", "unix:path=/run/live/at-spi");
     const exec = await withWard(ward);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
@@ -463,6 +464,7 @@ describe("which desktop", () => {
       DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/w/desktop/bus,guid=1",
       DISPLAY: "",
     });
+    expect(await exec.onDesktop(exec.desktopEnv)).not.toHaveProperty("AT_SPI_BUS_ADDRESS");
   });
 
   it("keeps a call on the desktop it started on when another call switches", async () => {
@@ -491,6 +493,17 @@ describe("which desktop", () => {
     const exec = await withWard("echo 'ward: its desktop failed to start' >&2; exit 1");
     exec.followWardDesktop(true);
     await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/didn't start: ward: its desktop failed to start/);
+  });
+
+  it("refuses a layout snapshot taken on another desktop", async () => {
+    const exec = await withWard(ward);
+    const { restoreLayout } = await import("../src/layout.ts");
+    const saved = { id: "abc", createdAt: "", scope: null, focused: null, workspaces: [], windows: [] };
+    exec.followWardDesktop(true);
+    const refused = /taken on another desktop/;
+    await expect(exec.onDesktop(() => restoreLayout({ ...saved, desktop: "/run/other/desktop" }))).rejects.toThrow(refused);
+    // One from before snapshots recorded their desktop was taken on the live session.
+    await expect(exec.onDesktop(() => restoreLayout(saved))).rejects.toThrow(refused);
   });
 
   it("ignores PUCK_OUTPUTS on a ward's desktop, whose output isn't one of the user's", async () => {

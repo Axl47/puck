@@ -104,8 +104,8 @@ restarts under it.
   its own folder: exit 0 prints the ward desktop's environment (starting the
   ward and the desktop when they aren't up; a shell script reading two files,
   about 10 ms, once they are), exit 3 means the folder has no ward, and a
-  missing `ward` means the machine has none; both of those are the live
-  session. Any other failure is reported to the agent, not papered over with
+  missing `ward` means the machine has none (an error inside a ward, where it
+  can't be missing); both of those are the live session. Any other failure is reported to the agent, not papered over with
   the live session: that would put its windows on the user's screen. The MCP
   server always asks (it is one process outside the ward for the whole thread,
   so nothing could prefix its calls); the CLI asks when it runs inside a ward
@@ -120,8 +120,13 @@ restarts under it.
 same field to move the session, for when the user wants something on their own
 screen; `PUCK_DESKTOP=live` does the same for one CLI command in a ward. The
 switch applies to calls that start after it, and it is per MCP server, so
-subagents sharing the server share it. `PUCK_OUTPUTS` names the user's monitors,
-so it limits nothing on a ward's desktop.
+subagents sharing the server share it; `desktop_state` itself picks after
+switching, so `desktop: "live"` still works when the ward's desktop won't start.
+`PUCK_OUTPUTS` names the user's monitors, so it limits nothing on a ward's
+desktop. A layout snapshot records the desktop it was taken on (its
+`XDG_RUNTIME_DIR`) and restores only there: every ward's desktop has the same
+output and workspace names, so one would otherwise apply anywhere. `puck spend`
+and `puck help` touch no desktop and start none.
 
 A ward's desktop has no Noctalia: `desktop_state` gives `shell: null`, and
 `notifications`, `dismiss_notification` and `shell_settings` refuse there

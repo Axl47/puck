@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { run } from "./exec.ts";
+import { desktop, desktopEnv, run } from "./exec.ts";
 import { stateDir } from "./paths.ts";
 import { allowedOutputs } from "./scope.ts";
 import {
@@ -37,6 +37,8 @@ export type WorkspaceRef = z.infer<typeof WorkspaceRefSchema>;
 const LayoutSnapshotSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
+  /** The runtime folder of the desktop it was taken on; snapshots from before ward desktops have none. */
+  desktop: z.string().optional(),
   /** Outputs recorded; null for all. */
   scope: z.array(z.string()).nullable(),
   focused: z.string().nullable(),
@@ -151,7 +153,7 @@ const snapshotPath = (id: string) => join(stateDir(), "snapshots", `${id}.json`)
  */
 export async function saveLayout(scope?: readonly string[]): Promise<LayoutSnapshot> {
   const [snap, g] = await Promise.all([snapshot(), geometry()]);
-  const saved = takeSnapshot(snap, g, scope);
+  const saved = { ...takeSnapshot(snap, g, scope), desktop: desktopEnv().XDG_RUNTIME_DIR };
   mkdirSync(join(stateDir(), "snapshots"), { recursive: true });
   writeFileSync(snapshotPath(saved.id), JSON.stringify(saved, null, 2));
   return saved;
@@ -179,6 +181,10 @@ export function loadLayout(id: string): LayoutSnapshot {
  * window renumbers the others.
  */
 export function restoreLayout(saved: LayoutSnapshot) {
+  // Wards' desktops share output and workspace names, so a snapshot would apply to any of them.
+  if (saved.desktop ? saved.desktop !== desktopEnv().XDG_RUNTIME_DIR : desktop() === "ward") {
+    throw new Error(`Snapshot ${saved.id} was taken on another desktop.`);
+  }
   const allowed = allowedOutputs();
   const inScope = (output: string) => (!saved.scope || saved.scope.includes(output)) && (!allowed || allowed.includes(output));
   const current = async () => {

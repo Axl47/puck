@@ -64,13 +64,18 @@ async function wardDesktop(): Promise<DesktopEnv | null> {
     );
     const { XDG_RUNTIME_DIR } = vars;
     if (!XDG_RUNTIME_DIR || !vars.WAYLAND_DISPLAY) throw new Error(`\`ward desktop\` printed no desktop: ${stdout.trim()}`);
-    return { ...process.env, ...vars, XDG_RUNTIME_DIR };
+    // Without what would still point a helper at the live session: an inherited
+    // Wayland socket, which wins over WAYLAND_DISPLAY, and its accessibility bus.
+    const { WAYLAND_SOCKET: _socket, AT_SPI_BUS_ADDRESS: _a11y, ...inherited } = process.env;
+    return { ...inherited, ...vars, XDG_RUNTIME_DIR };
   } catch (err) {
-    // No Ward on this machine, or it says this folder has none (exit 3): the live
-    // session. Anything else is a ward desktop that didn't start, and falling
-    // back would put this agent's windows on the user's screen.
+    // No Ward on this machine (and not in a ward, where it must be), or it says
+    // this folder has none (exit 3): the live session. Anything else is a ward
+    // desktop that didn't start, and falling back would put this agent's windows
+    // on the user's screen.
     const { code, stderr } = err as { code?: string | number; stderr?: string };
-    if (code === "ENOENT" || code === 3) return null;
+    if ((code === "ENOENT" && !process.env.WARD_ID) || code === 3) return null;
+    if (code === "ENOENT") throw new Error("This is a ward, but `ward` isn't on PATH, so its desktop can't be found.");
     throw new Error(`This ward's desktop didn't start: ${stderr?.trim() || (err instanceof Error ? err.message : String(err))}`);
   }
 }

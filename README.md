@@ -41,7 +41,7 @@ For an agent in a warded T3 worktree, Puck acts on that ward's private desktop, 
 - **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"ward"` moves it back).
 - **CLI:** `puck state` says which. Inside a ward it is the ward's desktop; `PUCK_DESKTOP=live puck …` acts on your screen. Outside a ward it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
 
-A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply.
+A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply. A layout snapshot restores only on the desktop it was taken on.
 
 ## Tools
 

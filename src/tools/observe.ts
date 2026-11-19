@@ -76,7 +76,7 @@ export const registerObserve: Register = (server, session) => {
     },
     async ({ desktop: wanted }) => {
       if (wanted) followWardDesktop(wanted === "ward");
-      // Chosen again, for the switch: this call started on the desktop it is leaving.
+      // Chosen here, after the switch, and not by the server as for other tools.
       return onDesktop(async () => {
         const on = desktop();
         if (wanted === "ward" && on === "live") throw new Error("This folder has no ward, so the live session is the only desktop.");

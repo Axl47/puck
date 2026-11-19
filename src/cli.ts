@@ -40,7 +40,11 @@ const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 
 try {
   if (command === "mcp") await serveStdio();
-  else {
+  else if (command === "spend") console.log(JSON.stringify(await spendToday()));
+  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys"].includes(command)) {
+    console.error(usage);
+    process.exit(command === "help" || command === "--help" ? 0 : 2);
+  } else {
     // In a ward, its desktop: an agent's shell there has the live session's environment.
     followWardDesktop(Boolean(process.env.WARD_ID) && process.env.PUCK_DESKTOP !== "live");
     await onDesktop(runCommand);
@@ -50,6 +54,7 @@ try {
   process.exit(1);
 }
 
+/** The commands that act on a desktop. */
 async function runCommand(): Promise<void> {
   switch (command) {
     case "state":
@@ -71,12 +76,6 @@ async function runCommand(): Promise<void> {
     case "keys":
       print(await keysCommand(args));
       break;
-    case "spend":
-      console.log(JSON.stringify(await spendToday()));
-      break;
-    default:
-      console.error(usage);
-      process.exit(command === "help" || command === "--help" ? 0 : 2);
   }
 }
 
