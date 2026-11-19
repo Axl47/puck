@@ -15,6 +15,11 @@ local function plural(n, one, many)
   return `{n} {n == 1 and one or many}`
 end
 
+-- Puck's own mark: idle (nothing to show, or still loading) or offline (T3 unreachable).
+local function mark(file)
+  return ui.image({ path = "assets/" .. file, width = 14, height = 14 })
+end
+
 local function segment(glyph, n, color)
   return ui.row({ gap = 3, align = "center" }, {
     ui.glyph({ name = glyph, size = 13, color = color }),
@@ -26,9 +31,9 @@ local function render()
   local items = {}
   local tips = {}
   if type(status) ~= "table" then
-    table.insert(items, ui.glyph({ name = "robot", size = 14, color = "on_surface_variant" }))
+    table.insert(items, mark("puck.svg"))
   elseif not status.ok then
-    table.insert(items, ui.glyph({ name = "robot-off", size = 14, color = "error" }))
+    table.insert(items, mark("puck-offline.svg"))
     table.insert(tips, status.error)
   else
     local running, waiting, review = count(status.running), count(status.waiting), count(status.review)
@@ -62,7 +67,7 @@ local function render()
     table.insert(tips, string.format("$%.2f today", spend))
   end
   if #items == 0 then
-    table.insert(items, ui.glyph({ name = "robot", size = 14, color = "on_surface_variant" }))
+    table.insert(items, mark("puck.svg"))
   end
 
   local container = barWidget.isVertical() and ui.column or ui.row

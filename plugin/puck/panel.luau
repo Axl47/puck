@@ -50,7 +50,10 @@ local function render()
 
   panel.render(ui.column({ flexGrow = 1, gap = 12, align = "stretch" }, {
     ui.row({ align = "center", justify = "space_between" }, {
-      ui.label({ text = "Agents", fontSize = 16, fontWeight = "bold", color = "on_surface" }),
+      ui.row({ gap = 8, align = "center" }, {
+        ui.image({ path = "assets/icon.svg", width = 18, height = 18 }),
+        ui.label({ text = "Agents", fontSize = 16, fontWeight = "bold", color = "on_surface" }),
+      }),
       ui.button({ glyph = "x", variant = "ghost", onClick = function() panel.close() end }),
     }),
     ui.scroll({ flexGrow = 1, gap = 16, align = "stretch" }, body),
