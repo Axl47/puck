@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" width="64" height="64" alt="">
+
 # Puck
 
 Lets agents see and drive the real desktop on gaia-arch (Umbriel + Noctalia), and shows live T3 agent status in the Noctalia bar. See [DESIGN.md](DESIGN.md).
