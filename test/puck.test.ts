@@ -42,6 +42,13 @@ describe("pickWorkspace", () => {
     expect(pickWorkspace(snap, "DP-2", ["other", spotify.id]).name).toBe("Browsers");
   });
 
+  it("skips a workspace holding the windows in the wrong order", () => {
+    const b = { ...spotify, id: "b", x: spotify.x - 500 }; // left of Spotify on the same workspace
+    const swapped = { ...snap, windows: [...snap.windows, b] };
+    expect(pickWorkspace(swapped, "DP-2", [spotify.id, "b"]).name).toBe("Browsers");
+    expect(pickWorkspace(swapped, "DP-2", ["b", spotify.id]).id).toBe("DP-2:6");
+  });
+
   it("otherwise picks the lowest-index empty workspace", () => {
     expect(pickWorkspace(snap, "DP-2", ["other"]).name).toBe("Browsers");
   });
