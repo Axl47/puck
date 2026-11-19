@@ -126,27 +126,48 @@ function distance(img: Pnm, i: number, colour: readonly number[]): number {
   return d;
 }
 
-/** The commonest colour within the rectangle, to 4 bits a channel, as the mean of the pixels in that bin. */
-function dominant(img: Pnm, x0: number, y0: number, x1: number, y1: number): number[] {
-  const { width, channels: ch, data } = img;
+/** The commonest colour, to 4 bits a channel, as the mean of the pixels in that bin. */
+function dominant(img: Pnm): number[] {
+  const { channels: ch, data } = img;
+  const size = img.width * img.height;
   const bin = (i: number) => {
     let key = 0;
     for (let k = 0; k < ch; k++) key = (key << 4) | (data[i * ch + k]! >> 4);
     return key;
   };
   const counts = new Uint32Array(1 << (4 * ch));
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) counts[bin(y * width + x)]!++;
+  for (let i = 0; i < size; i++) counts[bin(i)]!++;
   const best = counts.indexOf(Math.max(...counts));
   const sum = new Array<number>(ch).fill(0);
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const i = y * width + x;
-      if (bin(i) === best) for (let k = 0; k < ch; k++) sum[k]! += data[i * ch + k]!;
-    }
-  }
+  for (let i = 0; i < size; i++) if (bin(i) === best) for (let k = 0; k < ch; k++) sum[k]! += data[i * ch + k]!;
   return sum.map((v) => v / counts[best]!);
 }
 
+/**
+ * Morphological closing of a w×h mask with a (2r+1)-square: fills every gap
+ * the square can't fit into. Beyond the mask's edges counts as unset when
+ * growing and set when shrinking, so shapes touching the edge keep it.
+ */
+function close(mask: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  // One pass along rows or columns: grow sets a pixel if any within r is set, shrink if all are.
+  const pass = (src: Uint8Array, grow: boolean, rows: boolean) => {
+    const out = new Uint8Array(src.length);
+    const [n, len, step] = rows ? [h, w, 1] : [w, h, w];
+    for (let line = 0; line < n; line++) {
+      const base = rows ? line * w : line;
+      let set = 0; // set pixels in the window [k - r, k + r], clipped to the line
+      for (let j = 0; j < Math.min(r, len); j++) set += src[base + j * step]!;
+      for (let k = 0; k < len; k++) {
+        if (k + r < len) set += src[base + (k + r) * step]!;
+        if (k - r - 1 >= 0) set -= src[base + (k - r - 1) * step]!;
+        const total = Math.min(len - 1, k + r) - Math.max(0, k - r) + 1;
+        out[base + k * step] = (grow ? set > 0 : set === total) ? 1 : 0;
+      }
+    }
+    return out;
+  };
+  return pass(pass(pass(pass(mask, true, true), true, false), false, true), false, false);
+}
 
 /**
  * Turns a capture into dark text on white, whatever the colours: each pixel's
@@ -167,23 +188,17 @@ export function toInk(img: Pnm): { ink: Gray; blocks: number } {
   const gain = 2;
   const floor = 10;
   const data = new Uint8Array(width * height);
-  const paint = (x0: number, y0: number, x1: number, y1: number, colour: readonly number[]) => {
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const i = y * width + x;
-        data[i] = 255 - Math.min(255, Math.round(Math.max(0, distance(img, i, colour) - floor) * gain));
-      }
-    }
+  const ink1 = (i: number, colour: readonly number[]) => {
+    data[i] = 255 - Math.min(255, Math.round(Math.max(0, distance(img, i, colour) - floor) * gain));
   };
-  const paper = dominant(img, 0, 0, width - 1, height - 1);
-  paint(0, 0, width - 1, height - 1, paper);
+  const paper = dominant(img);
+  for (let i = 0; i < data.length; i++) ink1(i, paper);
   const ink = { width, height, data };
 
   const t = otsu(ink);
   const glyph = glyphHeight(label(width, height, true, (_, j) => data[j]! <= t).comps);
   if (!glyph) return { ink, blocks: 0 };
-  // Blocks: regions of one colour, away from the paper's, at least a glyph tall and two wide, and
-  // mostly filled (their text makes the holes).
+  // Blocks: regions of one colour, away from the paper's, at least a glyph tall and two wide.
   const same = 24;
   const colours = label(width, height, false, (seed, j) => {
     if (distance(img, j, paper) <= same) return false;
@@ -193,16 +208,45 @@ export function toInk(img: Pnm): { ink: Gray; blocks: number } {
     return true;
   });
   let blocks = 0;
-  for (const c of colours.comps.slice(1)) {
+  colours.comps.forEach((c, id) => {
     const w = c.x1 - c.x0 + 1;
     const h = c.y1 - c.y0 + 1;
-    if (h < glyph || w < glyph * 2 || c.area < w * h * 0.4) continue;
-    paint(c.x0, c.y0, c.x1, c.y1, dominant(img, c.x0, c.y0, c.x1, c.y1));
-    // Its antialiased edge would read as a frame.
-    for (let x = c.x0; x <= c.x1; x++) data[c.y0 * width + x] = data[c.y1 * width + x] = 255;
-    for (let y = c.y0; y <= c.y1; y++) data[y * width + c.x0] = data[y * width + c.x1] = 255;
+    // Mostly filled (their text makes the holes), or large enough to be a background (where a selection fills most of a region,
+    // the selection is the paper and the terminal's background the block).
+    if (!id || h < glyph || w < glyph * 2 || (c.area < w * h * 0.4 && c.area < glyph * glyph * 30)) return;
+    // Only its footprint: its pixels and the gaps among them too narrow for a glyph-sized square,
+    // which brings the text inside along but not text beside it (a selection wrapping over rows
+    // starts and ends mid-row). Its antialiased edge, which would read as a frame, goes white.
+    const r = glyph >> 1;
+    const x0 = Math.max(0, c.x0 - r - 1);
+    const y0 = Math.max(0, c.y0 - r - 1);
+    const fw = Math.min(width - 1, c.x1 + r + 1) - x0 + 1;
+    const fh = Math.min(height - 1, c.y1 + r + 1) - y0 + 1;
+    const own = new Uint8Array(fw * fh);
+    const colour = new Array<number>(img.channels).fill(0); // the mean of its pixels
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        const i = (y0 + y) * width + x0 + x;
+        if (colours.labels[i] !== id) continue;
+        own[y * fw + x] = 1;
+        for (let k = 0; k < img.channels; k++) colour[k]! += img.data[i * img.channels + k]! / c.area;
+      }
+    }
+    const foot = close(own, fw, fh, r);
+    for (let y = 0; y < fh; y++) {
+      for (let x = 0; x < fw; x++) {
+        if (!foot[y * fw + x]) continue;
+        const gx = x0 + x;
+        const gy = y0 + y;
+        const atImageEdge = gx === 0 || gy === 0 || gx === width - 1 || gy === height - 1;
+        const inside = x > 0 && y > 0 && x < fw - 1 && y < fh - 1 &&
+          foot[y * fw + x - 1] && foot[y * fw + x + 1] && foot[(y - 1) * fw + x] && foot[(y + 1) * fw + x];
+        if (inside || atImageEdge) ink1(gy * width + gx, colour);
+        else data[gy * width + gx] = 255;
+      }
+    }
     blocks++;
-  }
+  });
   return { ink, blocks };
 }
 

@@ -362,15 +362,29 @@ describe("OCR preparation", () => {
     expect(inkIn(ink, 310, 32, 560, 63)).toBeGreaterThan(white * 2); // frobnicate_widget(42)
   });
 
+  /** Ink in each box is text-like: there, and not a slab. */
+  const textLike = (img: Gray, ...boxes: [number, number, number, number][]) =>
+    boxes.map(([x0, y0, x1, y1]) => {
+      const share = inkIn(img, x0, y0, x1, y1) / ((x1 - x0 + 1) * (y1 - y0 + 1));
+      return share > 0.08 && share < 0.4;
+    });
+
   it("reads text inside coloured blocks rather than inking the block", () => {
     // A status bar (NORMAL, main.rs, Ln 142…), a selection, WARNING and PENDING badges.
     const { ink, blocks } = toInk(fixture("ocr-blocks.ppm"));
     expect(blocks).toBe(6);
-    const pending = { x0: 6, y0: 125, x1: 114, y1: 150 };
-    const area = (pending.x1 - pending.x0 + 1) * (pending.y1 - pending.y0 + 1);
-    const n = inkIn(ink, pending.x0, pending.y0, pending.x1, pending.y1);
-    expect(n).toBeGreaterThan(area * 0.08); // the word is there
-    expect(n).toBeLessThan(area * 0.4); // and the block is not
+    expect(textLike(ink, [6, 125, 114, 150])).toEqual([true]); // PENDING
+  });
+
+  it("reads text beside and inside a selection that fills most of a region", () => {
+    // A selection wrapping over three rows from mid-row to mid-row: the selection is the paper here.
+    const { ink } = toInk(fixture("ocr-selection.ppm"));
+    const boxes: [number, number, number, number][] = [
+      [70, 2, 515, 30], // before it: let frames = self.by_window.get(id)?;
+      [525, 2, 760, 30], // in it: let newest = frames
+      [505, 66, 700, 94], // after it: newest.clone()
+    ];
+    expect(textLike(ink, ...boxes)).toEqual([true, true, true]);
   });
 
   it("plains slashed zeros and nothing that looks like one", () => {

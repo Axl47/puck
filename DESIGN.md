@@ -200,7 +200,11 @@ process it without an image library, `src/ocr.ts`):
    red (113, on a background of 37) on the background's side once the
    threshold rose, as in a fullscreen terminal: gcc's `error:` vanished.
    Solid blocks of another colour (status bars, selections, inverse video,
-   badges) are inked against their own colour, or they'd read as slabs.
+   badges) are inked against their own colour, or they'd read as slabs: only
+   their footprint (their pixels and the gaps among them a glyph-sized square
+   can't fit into), so text beside a selection that starts mid-row is kept.
+   Where a selection fills most of a region it becomes the paper, and the
+   terminal's background, large enough, counts as the block.
 2. Ruling lines painted out: components clearly darker than the paper, at
    least three glyphs long, and sparse (a grid) or thin (a rule). Read as one
    block (4), a table with its grid left in lost its cells entirely.
