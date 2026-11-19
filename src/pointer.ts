@@ -134,9 +134,10 @@ export async function movePointer(p: Point): Promise<Point> {
  * moving the mouse stops it. PUCK_OUTPUTS must allow every point the input
  * reaches, a drag's glide included.
  */
-export async function pointerInput(at: Point | null, ops: readonly PointerOp[]) {
+export async function pointerInput(at: Point | null, input: (outs: readonly Output[]) => readonly PointerOp[]) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
+  const ops = input(outs); // encoded against the same layout that's checked
   const b = layoutBounds(outs);
   const waypoints = ops.flatMap((o) => (o.op === "move" ? [{ x: o.x + b.x, y: o.y + b.y }] : [])); // e.g. a drag's glide
   assertPoints(outs, [at ?? (await pointerPosition(outs)), ...waypoints]);
@@ -148,7 +149,12 @@ export async function pointerInput(at: Point | null, ops: readonly PointerOp[]) 
     async (focus) => {
       const start = await probePointer(outs);
       const target = at ? { x: Math.floor(at.x), y: Math.floor(at.y) } : start;
-      assertPoints(outs, [target]); // the pointer may have moved since the check above
+      try {
+        assertPoints(outs, [target]); // the pointer may have moved since the check above
+      } catch (err) {
+        focus.abandon(); // nothing was done; don't warp the cursor
+        throw err;
+      }
       home = start;
       await pointerAct([moveOp(outs, target)]);
       const landed = await probePointer(outs);

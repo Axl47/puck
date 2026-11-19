@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
 import { BUTTONS, clickOps, dragOps, movePointer, pointerInput } from "../pointer.ts";
-import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, outputs, snapshot, withFocus } from "../umbriel.ts";
+import { type Focus, type Window, findWindow, focusedWindow, keyboardGrab, msg, snapshot, withFocus } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
 
 const MODIFIERS: Record<string, string> = {
@@ -218,7 +218,7 @@ export const registerInvasive: Register = (server, session) => {
       },
       annotations: { destructiveHint: true },
     },
-    async ({ x, y, button, count }) => json(await pointerInput(pointOrNull(x, y), clickOps(button, count))),
+    async ({ x, y, button, count }) => json(await pointerInput(pointOrNull(x, y), () => clickOps(button, count))),
   );
 
   server.registerTool(
@@ -229,7 +229,7 @@ export const registerInvasive: Register = (server, session) => {
       inputSchema: { from: point, to: point, button: z.enum(BUTTONS).default("left") },
       annotations: { destructiveHint: true },
     },
-    async ({ from, to, button }) => json(await pointerInput(from, dragOps(await outputs(), from, to, button))),
+    async ({ from, to, button }) => json(await pointerInput(from, (outs) => dragOps(outs, from, to, button))),
   );
 
   server.registerTool(
@@ -245,7 +245,7 @@ export const registerInvasive: Register = (server, session) => {
       },
       annotations: { destructiveHint: true },
     },
-    async ({ x, y, dx, dy }) => json(await pointerInput(pointOrNull(x, y), [{ op: "scroll", dx, dy }])),
+    async ({ x, y, dx, dy }) => json(await pointerInput(pointOrNull(x, y), () => [{ op: "scroll", dx, dy }])),
   );
 };
 

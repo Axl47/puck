@@ -6,7 +6,7 @@ import { BUTTONS, type Button, clickOps, dragOps, movePointer, pointerInput } fr
 import { serveStdio } from "./server.ts";
 import { spendToday } from "./t3.ts";
 import { describeDesktop } from "./tools/observe.ts";
-import { outputs, snapshot } from "./umbriel.ts";
+import { snapshot } from "./umbriel.ts";
 
 const usage = `Usage: puck <command>
 
@@ -120,14 +120,16 @@ async function pointerCommand(argv: string[]) {
       if (points.length !== 1) throw new Error("pointer move needs X,Y");
       return { moved_to: await movePointer(points[0]!) };
     case "click":
-      return pointerInput(points[0] ?? null, clickOps(button, Math.min(Math.max(int(values.count, "--count"), 1), 3)));
+      const count = Math.min(Math.max(int(values.count, "--count"), 1), 3);
+      return pointerInput(points[0] ?? null, () => clickOps(button, count));
     case "drag": {
       const [from, to] = points;
       if (!from || !to) throw new Error("pointer drag needs X,Y X,Y");
-      return pointerInput(from, dragOps(await outputs(), from, to, button));
+      return pointerInput(from, (outs) => dragOps(outs, from, to, button));
     }
     case "scroll":
-      return pointerInput(points[0] ?? null, [{ op: "scroll", dx: int(values.dx, "--dx"), dy: int(values.dy, "--dy") }]);
+      const scroll = { op: "scroll", dx: int(values.dx, "--dx"), dy: int(values.dy, "--dy") } as const;
+      return pointerInput(points[0] ?? null, () => [scroll]);
     default:
       throw new Error(`Unknown pointer action "${action}"; use move, click, drag or scroll.`);
   }

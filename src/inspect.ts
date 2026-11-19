@@ -171,7 +171,7 @@ export async function inspect(target: InspectTarget, opts: InspectOptions) {
       a11y = await readAccessibility(win, point, wantA11yText ? rect : null, target.kind === "region");
       if (!a11y.found) errors.push(`accessibility: ${win.app_id} isn't on the accessibility bus`);
       if (a11y.truncated) errors.push("accessibility: tree too large; text and element may be incomplete");
-      if (a11y.partial) errors.push("accessibility: text crossing the region's edge couldn't be cut to it and is included whole");
+      if (a11y.partial && opts.text === "accessibility") errors.push("accessibility: text crossing the region's edge couldn't be cut to it and is included whole");
     } catch (err) {
       errors.push(`accessibility: ${err instanceof Error ? err.message : String(err)}`);
     }
