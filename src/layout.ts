@@ -7,6 +7,7 @@ import {
   type Snapshot,
   focusOn,
   msg,
+  outputs,
   snapshot,
   withFocus,
   workspaceArgs,
@@ -16,6 +17,8 @@ import {
 export type LayoutSnapshot = {
   id: string;
   createdAt: string;
+  /** Outputs recorded; null for all. */
+  scope: string[] | null;
   focused: string | null;
   activeWorkspaces: Record<string, string>;
   layouts: Record<string, string>;
@@ -45,19 +48,22 @@ export function extentOf(width: number, usableWidth: number, g: Geometry): numbe
   return (width + g.gap + 2 * g.border) / (usableWidth - g.gap);
 }
 
-export function takeSnapshot(snap: Snapshot, g: Geometry): LayoutSnapshot {
+/** Records the layout of the `scope` outputs (every output when omitted). */
+export function takeSnapshot(snap: Snapshot, g: Geometry, scope?: readonly string[]): LayoutSnapshot {
+  const inScope = (output: string) => !scope || scope.includes(output);
   const layoutOf = new Map(snap.workspaces.map((ws) => [ws.id, ws.layout]));
   const usable = new Map(snap.outputs.map((o) => [o.name, o.usable_area.width]));
   return {
     id: randomUUID().slice(0, 8),
     createdAt: new Date().toISOString(),
-    focused: snap.focused?.id ?? null,
+    scope: scope ? [...scope] : null,
+    focused: snap.focused && inScope(snap.focused.output) ? snap.focused.id : null,
     activeWorkspaces: Object.fromEntries(
-      snap.outputs.flatMap((o) => (o.active_workspace ? [[o.name, o.active_workspace]] : [])),
+      snap.outputs.flatMap((o) => (o.active_workspace && inScope(o.name) ? [[o.name, o.active_workspace]] : [])),
     ),
-    layouts: Object.fromEntries(snap.workspaces.map((ws) => [ws.id, ws.layout])),
+    layouts: Object.fromEntries(snap.workspaces.filter((ws) => inScope(ws.output)).map((ws) => [ws.id, ws.layout])),
     windows: snap.windows
-      .filter((w) => !w.scratchpad)
+      .filter((w) => !w.scratchpad && inScope(w.output))
       .map((w) => {
         const tiled = !w.floating && !w.fullscreen && layoutOf.get(w.workspace) === "scrolling";
         const W = usable.get(w.output);
@@ -74,10 +80,14 @@ export function takeSnapshot(snap: Snapshot, g: Geometry): LayoutSnapshot {
 
 const snapshotPath = (id: string) => join(stateDir(), "snapshots", `${id}.json`);
 
-/** Records the current layout to disk, so any Puck process (or `puck restore`) can put it back. */
-export async function saveLayout(): Promise<LayoutSnapshot> {
+/**
+ * Records the current layout to disk, so any Puck process (or `puck restore`) can
+ * put it back. Scope it to the outputs you'll touch, so restoring doesn't undo
+ * what the user changed elsewhere meanwhile.
+ */
+export async function saveLayout(scope?: readonly string[]): Promise<LayoutSnapshot> {
   const [snap, g] = await Promise.all([snapshot(), geometry()]);
-  const saved = takeSnapshot(snap, g);
+  const saved = takeSnapshot(snap, g, scope);
   mkdirSync(join(stateDir(), "snapshots"), { recursive: true });
   writeFileSync(snapshotPath(saved.id), JSON.stringify(saved, null, 2));
   return saved;
@@ -153,9 +163,10 @@ export function restoreLayout(saved: LayoutSnapshot) {
         await msg("window-set-primary-extent", String(want.extent));
       }
 
-      for (const wsId of Object.values(saved.activeWorkspaces)) {
+      const visible = new Map((await outputs()).map((o) => [o.name, o.active_workspace]));
+      for (const [output, wsId] of Object.entries(saved.activeWorkspaces)) {
         const ws = wsById.get(wsId);
-        if (ws) await msg("workspace-switch", ...workspaceArgs(ws));
+        if (ws && visible.get(output) !== wsId) await msg("workspace-switch", ...workspaceArgs(ws));
       }
       if (saved.focused && after.has(saved.focused)) await focusOn(saved.focused);
       return { moved, skipped };

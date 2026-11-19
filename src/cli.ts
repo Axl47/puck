@@ -9,11 +9,12 @@ const usage = `Usage: puck <command>
 
   mcp              Run the MCP server on stdio (PUCK_INVASIVE=1 adds close, kill and typing)
   state            Print the desktop as agents see it
-  snapshot         Save the current layout and print its id
+  snapshot [out…]  Save the layout of the given outputs (all when none) and print its id
   restore <id>     Put a saved layout back
   spend            Print today's agent spend from T3 as JSON`;
 
-const [command = "mcp", arg] = process.argv.slice(2);
+const [command = "mcp", ...args] = process.argv.slice(2);
+const arg = args[0];
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 
 try {
@@ -25,7 +26,7 @@ try {
       print(describeDesktop(await snapshot(), new Set()));
       break;
     case "snapshot":
-      print({ snapshot_id: (await saveLayout()).id });
+      print({ snapshot_id: (await saveLayout(args.length ? args : undefined)).id });
       break;
     case "restore":
       if (!arg) throw new Error("restore needs a snapshot id");

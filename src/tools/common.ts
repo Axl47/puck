@@ -1,5 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
+export { allowedOutputs, assertOutputs, assertUnrestricted } from "../scope.ts";
+
 /** State shared by every tool in one server process. */
 export type Session = {
   /** Windows this process launched; the only ones close/kill touch by default. */

@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
 import { captureScale } from "../src/capture.ts";
 import { extentOf, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
+import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs } from "../src/tools/invasive.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
 import { type Snapshot, parseOutputs, parseWindows, parseWorkspaces } from "../src/umbriel.ts";
@@ -56,6 +57,14 @@ describe("layout snapshots", () => {
     // Measured: a 0.9 column on a 1600 px output is 1417 px; 0.5 on 1280 px is 621 px.
     expect(extentOf(1417, 1600, g)).toBeCloseTo(0.9, 2);
     expect(extentOf(621, 1280, g)).toBeCloseTo(0.5, 3);
+  });
+
+  it("scopes to the given outputs", () => {
+    const saved = takeSnapshot(snap, g, ["HDMI-A-1"]);
+    expect(saved.scope).toEqual(["HDMI-A-1"]);
+    expect(Object.keys(saved.activeWorkspaces)).toEqual(["HDMI-A-1"]);
+    expect(saved.windows.every((w) => w.workspace.startsWith("HDMI-A-1"))).toBe(true);
+    expect(Object.keys(saved.layouts).every((id) => id.startsWith("HDMI-A-1"))).toBe(true);
   });
 
   it("records workspace, layout, visibility and width", () => {
@@ -121,5 +130,21 @@ describe("notification history", () => {
       [2, true],
       [1, false],
     ]);
+  });
+});
+
+describe("PUCK_OUTPUTS", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("allows everything when unset", () => {
+    expect(() => assertOutputs("DP-2")).not.toThrow();
+    expect(() => assertUnrestricted("x")).not.toThrow();
+  });
+
+  it("refuses outputs outside the list and global changes", () => {
+    vi.stubEnv("PUCK_OUTPUTS", "PUCK-SBX");
+    expect(() => assertOutputs("PUCK-SBX")).not.toThrow();
+    expect(() => assertOutputs("PUCK-SBX", "DP-2")).toThrow(/refusing to change DP-2/);
+    expect(() => assertUnrestricted("Changing shell settings")).toThrow(/PUCK_OUTPUTS/);
   });
 });

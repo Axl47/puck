@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { run } from "../exec.ts";
 import { findWindow, focusOn, focusedWindow, msg, snapshot, withFocus } from "../umbriel.ts";
-import { type Register, json } from "./common.ts";
+import { type Register, assertOutputs, json } from "./common.ts";
 
 const MODIFIERS: Record<string, string> = {
   ctrl: "ctrl",
@@ -50,7 +50,7 @@ export function chordArgs(chord: string): string[] {
 
 /** Focuses the window and confirms it holds focus before any input is sent. */
 async function focusForInput(windowId: string) {
-  findWindow(await snapshot(), windowId);
+  assertOutputs(findWindow(await snapshot(), windowId).output);
   await focusOn(windowId);
   if ((await focusedWindow())?.id !== windowId) throw new Error("Could not focus that window; no input was sent.");
 }
@@ -78,7 +78,7 @@ export const registerInvasive: Register = (server, session) => {
       annotations: { destructiveHint: true },
     },
     async ({ window_id, owned_only }) => {
-      findWindow(await snapshot(), window_id);
+      assertOutputs(findWindow(await snapshot(), window_id).output);
       guardOwned(window_id, owned_only);
       await msg("window-close", window_id);
       session.owned.delete(window_id);
@@ -96,7 +96,7 @@ export const registerInvasive: Register = (server, session) => {
       annotations: { destructiveHint: true },
     },
     async ({ window_id, owned_only }) => {
-      findWindow(await snapshot(), window_id);
+      assertOutputs(findWindow(await snapshot(), window_id).output);
       guardOwned(window_id, owned_only);
       await msg("window-kill", window_id);
       session.owned.delete(window_id);

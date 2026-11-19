@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CommandError, run } from "./exec.ts";
+import { allowedOutputs } from "./scope.ts";
 
 // Umbriel's `--json` output, trimmed to the fields Puck uses. Unknown keys are dropped.
 
@@ -135,8 +136,10 @@ export function withFocus<T>(fn: () => Promise<T>, opts: FocusOptions): Promise<
     } finally {
       try {
         const [ended, now, wss] = await Promise.all([focusedWindow(), outputs(), workspaces()]);
+        const allowed = allowedOutputs();
         for (const o of before) {
           if (!o.active_workspace || opts.shows === "all" || opts.shows?.includes(o.name)) continue;
+          if (allowed && !allowed.includes(o.name)) continue; // never touch outputs outside PUCK_OUTPUTS
           const ws = wss.find((ws) => ws.id === o.active_workspace);
           const current = now.find((n) => n.name === o.name)?.active_workspace;
           if (ws && current !== ws.id) await msg("workspace-switch", ...workspaceArgs(ws));

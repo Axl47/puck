@@ -18,7 +18,7 @@ import {
   withFocus,
   workspaceArgs,
 } from "../umbriel.ts";
-import { type Register, json } from "./common.ts";
+import { type Register, allowedOutputs, assertOutputs, assertUnrestricted, json } from "./common.ts";
 
 const reversible = { readOnlyHint: false, destructiveHint: false } as const;
 
@@ -43,7 +43,7 @@ export const registerArrange: Register = (server, session) => {
     async ({ window_id }) =>
       withFocus(
         async () => {
-          findWindow(await snapshot(), window_id);
+          assertOutputs(findWindow(await snapshot(), window_id).output);
           await focusOn(window_id);
           return json(await placement([window_id]));
         },
@@ -76,6 +76,7 @@ export const registerArrange: Register = (server, session) => {
             : output
               ? findWorkspace(snap, findOutput(snap, output).active_workspace ?? "")
               : undefined;
+          assertOutputs(w.output, ...(target ? [target.output] : []));
           if (target && target.id !== w.workspace) {
             await focusOn(w.id);
             await msg("window-move-to-workspace-silent", ...workspaceArgs(target));
@@ -112,6 +113,7 @@ export const registerArrange: Register = (server, session) => {
           const snap = await snapshot();
           findOutput(snap, output);
           const wins = window_ids.map((id) => findWindow(snap, id));
+          assertOutputs(output, ...wins.map((w) => w.output));
           const target = workspace ? findWorkspace(snap, workspace) : pickWorkspace(snap, output, window_ids);
           if (target.output !== output) throw new Error(`${target.id} is not on ${output}.`);
 
@@ -148,6 +150,7 @@ export const registerArrange: Register = (server, session) => {
       withFocus(
         async () => {
           const ws = findWorkspace(await snapshot(), workspace);
+          assertOutputs(ws.output);
           await msg("workspace-switch", ...workspaceArgs(ws));
           if (layout) await msg("workspace-set-layout", layout);
           return json({ workspace: ws.id, layout: layout ?? ws.layout });
@@ -179,7 +182,12 @@ export const registerArrange: Register = (server, session) => {
             : output
               ? findWorkspace(snap, findOutput(snap, output).active_workspace ?? "")
               : undefined;
-          if (target) await msg("workspace-switch", ...workspaceArgs(target));
+          const allowed = allowedOutputs();
+          if (allowed && !target) throw new Error(`Pass output or workspace (PUCK_OUTPUTS limits Puck to ${allowed.join(", ")}).`);
+          if (target) {
+            assertOutputs(target.output);
+            await msg("workspace-switch", ...workspaceArgs(target));
+          }
 
           const before = new Set(snap.windows.map((w) => w.id));
           await msg("spawn", commandLine(entry));
@@ -191,6 +199,11 @@ export const registerArrange: Register = (server, session) => {
             const w = fresh.find((w) => w.app_id.toLowerCase().includes(hint) || hint.includes(w.app_id.toLowerCase())) ?? fresh[0];
             if (!w) continue;
             session.owned.add(w.id);
+            // A window rule may have sent it elsewhere; under PUCK_OUTPUTS, bring it back.
+            if (allowed && target && !allowed.includes(w.output)) {
+              await focusOn(w.id);
+              await msg("window-move-to-workspace-silent", ...workspaceArgs(target));
+            }
             return json({ app: entry.name, window: (await placement([w.id]))[0] });
           }
           return json({
@@ -208,11 +221,14 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Save layout",
       description:
-        "Record every window's workspace, floating/fullscreen state and width, each workspace's layout, the visible workspaces and focus. Take one before rearranging and restore it when done, to leave the desktop as you found it.",
+        "Record each window's workspace, floating/fullscreen state and width, each workspace's layout, the visible workspaces and focus. Take one before rearranging and restore it when done, to leave the desktop as you found it. Pass the outputs you'll touch so a restore can't undo changes the user makes elsewhere meanwhile.",
+      inputSchema: { outputs: z.array(z.string()).optional().describe("Output names to record; all when omitted") },
       annotations: { ...reversible, readOnlyHint: true },
     },
-    async () => {
-      const saved = await saveLayout();
+    async ({ outputs }) => {
+      const scope = outputs ?? allowedOutputs() ?? undefined;
+      if (scope) assertOutputs(...scope);
+      const saved = await saveLayout(scope);
       return json({ snapshot_id: saved.id, windows: saved.windows.length });
     },
   );
@@ -226,7 +242,14 @@ export const registerArrange: Register = (server, session) => {
       inputSchema: { snapshot_id: z.string() },
       annotations: reversible,
     },
-    async ({ snapshot_id }) => json(await restoreLayout(loadLayout(snapshot_id))),
+    async ({ snapshot_id }) => {
+      const saved = loadLayout(snapshot_id);
+      if (allowedOutputs()) {
+        if (!saved.scope) throw new Error("This snapshot covers every output; disabled while PUCK_OUTPUTS is set.");
+        assertOutputs(...saved.scope);
+      }
+      return json(await restoreLayout(saved));
+    },
   );
 
   server.registerTool(
@@ -238,6 +261,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: reversible,
     },
     async ({ id, all }) => {
+      assertUnrestricted("Dismissing notifications");
       if (all) await clearActiveNotifications();
       else if (id !== undefined) await dismissNotification(id);
       else throw new Error("Pass id or all: true.");
@@ -259,6 +283,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: reversible,
     },
     async ({ wallpaper, theme_mode, do_not_disturb }) => {
+      assertUnrestricted("Changing shell settings");
       if (wallpaper) {
         if (!statSync(wallpaper.path, { throwIfNoEntry: false })?.isFile()) {
           throw new Error(`No image file at ${wallpaper.path}.`);
