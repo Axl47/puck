@@ -55,7 +55,7 @@ export const registerObserve: Register = (server, session) => {
     {
       title: "Desktop state",
       description:
-        "Outputs (monitors), workspaces, and every window with its id, app, title, workspace and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers). Call this first; other tools take these ids.",
+        "Outputs (monitors), workspaces, and every window with its id, app, title, workspace and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers). Flags such as visible, floating and fullscreen appear only when true. Call this first; other tools take these ids.",
       annotations: { readOnlyHint: true },
     },
     async () => {

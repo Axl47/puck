@@ -58,8 +58,8 @@ agent status on that desktop. It has two parts that share one repo:
   `[[service]]` (headless), `[[panel]]`, `[[desktop_widget]]`. Runtime APIs
   include `noctalia.http` (async, with headers), `noctalia.state.*` (service →
   widget), `noctalia.readFile`, `barWidget.render` (declarative `ui.*`),
-  `noctalia.togglePanel`. This install is **plugin API 35**, so the plugin
-  targets 35.
+  `noctalia.togglePanel`, `noctalia.runAsync`. This install supports
+  **plugin API 3–34**, so the plugin targets 34.
 
 ### T3
 
@@ -85,94 +85,110 @@ fire.
 
 | Tier | On by default | Tools |
 |---|---|---|
-| **Observe** | yes | `desktop_state`, `screenshot`, `notifications`, `shell_status` |
-| **Arrange** | yes | `focus`, `move_window`, `arrange`, `workspace`, `launch`, `layout_snapshot`, `layout_restore`, `shell` (wallpaper, theme, DND, notify, dismiss) |
-| **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer` |
+| **Observe** | yes | `desktop_state`, `screenshot`, `notifications` |
+| **Arrange** | yes | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` |
+| **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys` |
 
 Arrange actions are reversible and never destroy state. Invasive tools are
 registered only when `PUCK_INVASIVE=1` is in the server's env, and even then
 `close_window`/`kill_window` refuse windows Puck didn't launch in that
 session unless the call passes `owned_only: false`. So an agent can clean up
-what it opened but can't close my Zed by accident. Typing and pointer actions
-target the focused window, so they first check focus matches the `window_id`
-the call names.
+what it opened but can't close my Zed by accident. Typing targets the focused
+window, so it first checks focus landed on the `window_id` the call names.
+Pointer input is out of v1.
 
-### Tool shapes (sketch)
+`PUCK_OUTPUTS=<output,…>` limits every mutating tool to those outputs and
+disables global changes (shell settings, notifications). Tests run with it set
+to a virtual output, so they can't touch the real monitors even by mistake.
 
-- `desktop_state()` → outputs (name, position, scale, usable area, active
-  workspace), workspaces (id, name, layout, window count), windows (id,
-  app_id, title, workspace, output, geometry, flags). One call, compact JSON.
-- `screenshot({ target: { output } | { window_id } | { region }, full_res? })`
-  → MCP image content (+ file path when `full_res`).
-- `move_window({ window_id, workspace?, output?, floating?, region? })`.
-- `arrange({ output, window_ids, layout: "columns" | "rows" | "master" | "single", sizes? })`:
-  moves the windows to that output's active workspace and sizes them. "Zed
-  and Helium side by side on the right monitor" is one call.
-- `launch({ app })`: resolves a desktop entry by name or id, runs it through
-  `umbriel msg spawn`, waits for the new window, returns its id and records
-  it as Puck-owned.
-- `layout_snapshot()` / `layout_restore({ snapshot_id })`: saves every window's
-  workspace, output, floating state, and focus, and moves them back. Agents use
-  this to leave the desktop as they found it; the agentic tests do too.
+### Focus
+
+Umbriel applies most actions to the focused window **on the output under the
+cursor**, so focusing alone isn't enough: Puck uses `window-focus-warp`, which
+moves the cursor too. Every mutating call runs inside `withFocus`, which
+serializes calls, pauses focus-follows-mouse (a runtime override, dropped
+afterwards) so the user's mouse can't steal focus mid-sequence, puts back the
+visible workspace of outputs the call wasn't meant to change, and refocuses the
+user's window when it's still on screen. The cursor does jump briefly.
+
+### Tool notes
+
+- `desktop_state` returns outputs, workspaces, windows and shell settings in
+  one compact call; window flags appear only when true.
+- `screenshot` takes an output, a window id (works on hidden workspaces) or a
+  region, and returns a JPEG scaled to 1568 px; `full_res` saves a PNG.
+- `arrange_windows({ window_ids, output, layout: "split" | "master" })` moves
+  the windows to a workspace on that output that holds nothing else (one
+  holding only these windows, else the first empty one), shows it, and sets
+  Umbriel's `dwindle` or `master` layout. "Zed and Helium side by side on the
+  right monitor" is one call. Scrolling columns can't show two windows fully
+  with `center_focused = "always"`, so there's no columns mode.
+- `launch_app` resolves a desktop entry by name or id, spawns it through
+  Umbriel, waits for the new window, and records it as Puck-owned.
+- `layout_snapshot({ outputs? })` / `layout_restore` record and put back each
+  window's workspace, floating and fullscreen state and column width, each
+  workspace's layout, the visible workspaces and focus. Workspaces are stored as
+  references (named ones by name, dynamic ones by position) because Umbriel
+  deletes empty dynamic workspaces and renumbers the rest. Scope snapshots to
+  the outputs you'll touch so a restore can't undo the user's changes
+  elsewhere. Column order within a workspace isn't restored.
 
 ### Shape of the code
 
 ```
 src/
-  umbriel.ts     typed client: run `umbriel … --json`, parse with zod, socket discovery
-  noctalia.ts    typed client for `noctalia msg` + notification history
+  exec.ts        child processes; finds the Wayland display agents lack
+  umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
+  noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
   capture.ts     grim, scaled and encoded by grim itself
-  tools/         one file per tier; each exports its tool definitions
-  server.ts      registers tiers based on env, stdio transport
-  cli.ts         `puck mcp` (server), `puck state` (debug dump), `puck t3-token`
+  apps.ts        desktop entry lookup
+  arrange.ts     workspace choice for arrange_windows
+  layout.ts      snapshots and restore
+  scope.ts       PUCK_OUTPUTS
+  t3.ts          spend over T3's WebSocket RPC
+  tools/         one file per tier
+  server.ts      registers tiers from env, stdio transport
+  cli.ts         puck mcp | state | snapshot | restore | spend
+plugin/puck/     the Noctalia plugin
 ```
 
-Node 22+, pnpm, `@modelcontextprotocol/sdk`, and zod (the SDK's own schema
-library). No other runtime dependencies. Installed as `~/.local/bin/puck`, registered
-by adding an `puck` entry to indexio's `mcp/servers.json`. `mcp/sync` skips
-servers whose command isn't installed, so the Mac ignores it.
+Node 22+, pnpm, `@modelcontextprotocol/sdk`, and zod. Installed as
+`~/.local/bin/puck` (a symlink to `dist/cli.js`), registered by adding a
+`puck` entry to indexio's `mcp/servers.json`. `mcp/sync` skips servers whose
+command isn't installed, so the Mac ignores it.
 
 ## Bar widget
 
 ```
-◉ 3  ◔ 1  ✓        (3 running, 1 waiting on me, all PR checks passing)
-◉ 2  ✗ 1            (a PR has failing checks: red)
+✋1  ⟳3  ✉2  ⎇1  $51
 ```
 
-- **Service** (`status.luau`) polls `/api/orchestration/shell?omitIdleSubagents=1&omitOlderSettled=1`
-  every 5 s with the token from `~/.config/puck/t3-token`, reduces it to
-  counts plus the waiting and failing threads, and publishes that through
-  `noctalia.state`.
-- **Widget** (`widget.luau`) renders the counts. Zero states hide; nothing
-  shows when no agent is active. "Waiting" uses the accent color, failing
-  checks use the error color.
-- **Panel** (`panel.luau`, opened on click) lists waiting threads and failing
-  PRs by project and title.
-- **Spend** (optional, last): `puck spend --json` makes one WebSocket call to
-  `server.getUsageSummary`; the service runs it once a minute if the plugin API
-  allows running commands, and the widget's tooltip shows today's spend.
+One glyph and count per non-empty state: threads that need me (a pending
+approval or question, accent color), running threads, finished threads I
+haven't reviewed (unsettled), open PRs (error color with the failing count when
+checks fail), and today's spend. The tooltip spells each out; clicking opens a
+panel listing the threads by section.
 
-The plugin lives in `plugin/`, installed as a Noctalia plugin source and added
-to the bar in Noctalia's config, both recorded in omarchy-config.
+- **Service** (`service.luau`) polls
+  `/api/orchestration/shell?omitIdleSubagents=1&omitOlderSettled=1` every 5 s
+  with the token from `~/.config/puck/t3-token` and publishes a summary through
+  `noctalia.state`. Once a minute it runs `puck spend`, which makes one
+  WebSocket call to `server.getUsageSummary`.
+- **Widget** and **panel** only render that state.
+
+The plugin is installed from a local path source (`noctalia msg plugins source
+add puck path <repo>/plugin`) and placed first in the bar's right group in
+`~/.config/noctalia/gaia.toml`; both are recorded in omarchy-config.
 
 ## Testing
 
-- **Unit**: the zod parsers and the arrange planner, against captured JSON from
-  this machine. No mocks of the compositor beyond fixtures.
-- **Agentic**: Claude subagents get only the Puck MCP tools and a desktop
-  task ("put Zed and Helium side by side on the right monitor and screenshot
-  it"). I check the result with my own `desktop_state` and a screenshot.
-- **Not disturbing the session**: every test run starts with
-  `layout_snapshot` and ends with `layout_restore`; tests only close windows
-  they launched. Where a task doesn't need my monitors, tests run on a virtual
-  output (`umbriel output-create PUCK-TEST`), which isn't visible on either
-  screen, and destroy it afterwards. Focus changes are the one thing that can
-  still reach me mid-test, so tests restore focus at the end.
-
-## Open questions
-
-1. **Pointer input**: keyboard is free (`wtype`). Pointer needs either
-   `wlrctl` from the AUR (relative moves only) or a ~100-line Wayland client
-   for absolute moves and clicks. I'd ship keyboard first and add pointer only
-   if a real task needs it.
-2. **Spend in the bar**: worth one extra WebSocket client, or skip?
+- **Unit**: parsers, workspace choice, snapshot math and references, desktop
+  entries, key chords, against JSON captured on this machine.
+- **Agentic**: `scripts/agentic-test.sh "<task>"` runs a headless Claude
+  session that has only Puck's tools, with `PUCK_OUTPUTS=PUCK-SBX` and the
+  invasive tier on. It creates the `PUCK-SBX` virtual output if needed. I check
+  the result myself with `umbriel` and a screenshot of that output.
+- **Not disturbing the session**: anything that moves, resizes or relayouts
+  runs only on a virtual output. Read-only checks (listing, screenshots) may
+  use the real outputs. Creating a virtual output makes Noctalia add a
+  lock-screen widget entry for it to `settings.toml`; remove it afterwards.

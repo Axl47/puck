@@ -1,0 +1,28 @@
+# Live T3 agent status in the Noctalia bar. The service polls the local T3
+# server and publishes a summary through noctalia.state; the widget and panel
+# render it. Needs a read-only T3 token at ~/.config/puck/t3-token (see README).
+
+id = "axl47/puck"
+name = "Puck"
+version = "0.1.0"
+plugin_api = 34
+author = "axl47"
+license = "MIT"
+dependencies = []
+tags = ["agents", "developer"]
+icon = "robot"
+description = "Running T3 threads, threads waiting on you, PR checks and today's spend."
+
+[[service]]
+id = "poller"
+entry = "service.luau"
+
+[[widget]]
+id = "status"
+entry = "widget.luau"
+
+[[panel]]
+id = "threads"
+entry = "panel.luau"
+width = 420
+height = 420
