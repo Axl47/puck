@@ -179,7 +179,7 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Launch app",
       description:
-        "Start an installed app by name or desktop id (e.g. 'Zed', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it).",
+        "Start an installed app by name or desktop id (e.g. 'Obsidian', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it).",
       inputSchema: {
         app: z.string(),
         workspace: z.string().optional().describe("Workspace id to open on; switches that output to it"),
