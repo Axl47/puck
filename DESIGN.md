@@ -466,8 +466,10 @@ summary of the result. Arguments are cut (strings to 300 characters, arrays to
 recorder can see an unchanged screen being captured again.
 
 Never recorded: text an agent types (`type_text` keeps only its length,
-`press_keys` keeps chords and named keys and counts single characters, since
-either can be a password), pixels, and anything captured from the screen (page,
+`press_keys` keeps named keys and chords with a command modifier and counts
+every other key, a shifted character included, since either can be a password;
+neither tool's error message is kept, because a failed `wtype` names what it
+was typing), pixels, and anything captured from the screen (page,
 OCR or accessibility text, notification bodies). Recording never changes a
 tool's result and never creates the folder. The CLI records nothing: it runs in
 a ward, which can't see the folder, and its calls are already recorded as shell
