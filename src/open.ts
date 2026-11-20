@@ -57,18 +57,22 @@ export async function open(command: readonly string[], waitMs: number) {
       log,
       window: { id, app_id, title, workspace, x, y, width, height },
     });
+    const fresh = async () => (await windows()).filter((w) => !before.has(w.id));
+    const own = (ws: readonly Window[]) => ws.find((w) => sessionOf(w.pid) === child.pid);
     const started = Date.now();
     while (Date.now() - started < waitMs && !(exit?.code === 0 && Date.now() - exit.at > AFTER_EXIT_MS)) {
       await sleep(250);
-      const own = (await windows()).find((w) => !before.has(w.id) && sessionOf(w.pid) === child.pid);
-      if (own) return result(own);
+      const mine = own(await fresh());
+      if (mine) return result(mine);
       if (exit && exit.code !== 0) {
         const tail = readFileSync(log, "utf8").trim().split("\n").slice(-15).join("\n");
         throw new Error(`${command[0]} ended (${exit.code === null ? "killed" : `exit ${exit.code}`}) before opening a window${tail ? `:\n${tail}` : "."}`);
       }
     }
-    const all = await windows();
-    const other = all.find((w) => !before.has(w.id));
+    // One last look, the command's own window first: it may have come up since the last one.
+    const last = await fresh();
+    const other = own(last) ?? last[0];
+    if (other && own([other])) return result(other);
     const why = exit ? "The command ended without a window of its own" : `No window of the command's own within ${waitMs / 1000} s (it is still running)`;
     if (other) return { ...result(other), note: `${why}; this one opened meanwhile, from another process (a launcher hands off like that). Check that it is yours.` };
     return {
@@ -79,7 +83,7 @@ export async function open(command: readonly string[], waitMs: number) {
       note: exit
         ? `${why}. If it handed off to a copy that was already running, look for it in \`windows\`; a copy running on the user's screen would have opened it there.`
         : `${why}. \`puck state\` lists the windows once it has one.`,
-      windows: all.map(brief),
+      windows: (await windows()).map(brief),
     };
   });
 }

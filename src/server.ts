@@ -4,7 +4,7 @@ import { registerArrange } from "./tools/arrange.ts";
 import type { Session } from "./tools/common.ts";
 import { registerInvasive } from "./tools/invasive.ts";
 import { registerObserve } from "./tools/observe.ts";
-import { followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDesktop } from "./exec.ts";
+import { desktop, followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDesktop } from "./exec.ts";
 
 /**
  * launch_app opens a window: on the agent's private desktop, started here if
@@ -12,7 +12,6 @@ import { followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDes
  * desktop to start it refuses, so nothing lands on the user's screen unasked.
  */
 async function privateForOpening(): Promise<void> {
-  if (!followsPrivateDesktop()) return;
   const none = await startPrivateDesktop();
   if (none) {
     throw new Error(
@@ -43,8 +42,16 @@ export function createServer(): McpServer {
     if (name === "desktop_state") return registerTool(name, config, handler);
     const call = handler as (...args: unknown[]) => unknown;
     return registerTool(name, config, (async (...args: unknown[]) => {
-      if (name === "launch_app") await privateForOpening();
-      return onDesktop(() => call(...args));
+      // Decided once, as the call starts: a switch to the live session made while
+      // the private desktop comes up must not take this launch with it.
+      const opens = name === "launch_app" && followsPrivateDesktop();
+      if (opens) await privateForOpening();
+      return onDesktop(() => {
+        if (opens && desktop() !== "private") {
+          throw new Error("Puck was switched to the live session while this launch waited for the private desktop; nothing was opened. Call launch_app again.");
+        }
+        return call(...args);
+      });
     }) as typeof handler);
   }) as typeof registerTool;
   const session: Session = { owned: new Set() };

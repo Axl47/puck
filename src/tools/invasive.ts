@@ -1,11 +1,9 @@
 import { z } from "zod";
-import { desktop, run } from "../exec.ts";
-import { type KeyTarget, focusForInput, pressKeys } from "../keys.ts";
+import { desktop } from "../exec.ts";
+import { type KeyTarget, pressKeys, typeText } from "../keys.ts";
 import { BUTTONS, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "../pointer.ts";
-import { findWindow, msg, snapshot, withFocus } from "../umbriel.ts";
+import { findWindow, msg, snapshot } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
-
-const TYPE_CHUNK = 64;
 
 /**
  * Closing, killing, and synthetic input. On a private desktop, where everything
@@ -87,20 +85,7 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ window_id, text }) => {
       allowed();
-      return withFocus(
-        async (focus) => {
-          const check = await focusForInput(focus, window_id);
-          // In chunks (of code points, so emoji stay whole), re-checking focus between them.
-          const chars = Array.from(text);
-          for (let i = 0; i < chars.length; i += TYPE_CHUNK) {
-            if (i > 0) await check(`${i} characters`);
-            await run("wtype", ["--", chars.slice(i, i + TYPE_CHUNK).join("")], { timeoutMs: 30_000 });
-          }
-          await check(null);
-          return json({ typed: chars.length });
-        },
-        { restoreFocus: true },
-      );
+      return json(await typeText(window_id, text));
     },
   );
 
@@ -109,7 +94,7 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Press keys",
       description:
-        "Press key chords in order, e.g. ['ctrl+l', 'Return'], into a window (focused first, then given back) or into a shell overlay that has the keyboard. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr.",
+        "Press key chords in order, e.g. ['ctrl+l', 'Return'], into a window (focused first, then given back) or into a shell overlay that has the keyboard. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr. On a private desktop, shortcuts don't act in GTK 3 apps (text does, and GTK 4 apps and terminals take both): click the control instead.",
       inputSchema: {
         window_id: z.string().optional(),
         overlay: overlayParam.describe(
@@ -129,7 +114,10 @@ export const registerInvasive: Register = (server, session) => {
   const overlay = overlayParam.describe(
     "Layer-shell namespace of a shell overlay you mean to click into, e.g. 'selection' for slurp's picker. By default input is refused while a shell surface has the keyboard; with this, it goes ahead only if that overlay is open under every point.",
   );
-  const window_id = z.string().optional().describe("Count the coordinates from this window's top-left corner, as in a screenshot of it, instead of globally.");
+  const window_id = z
+    .string()
+    .optional()
+    .describe("Count the coordinates from this window's top-left corner instead of globally. On a private desktop those are the pixels of a screenshot of the window; where a screenshot was scaled (the sizes it returns differ), convert to the window's logical size first.");
   const pointerNote = " Coordinates are logical pixels: global, as desktop_state reports them, or with window_id from that window's top-left corner. Afterwards the pointer and the user's focus go back where they were.";
 
   server.registerTool(
@@ -142,8 +130,8 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ window_id, ...p }) => {
       allowed();
-      const [at] = await fromWindow(window_id, [p]);
-      return json({ moved_to: await movePointer(at) });
+      const { points, still } = await fromWindow(window_id, [p]);
+      return json({ moved_to: await movePointer(points[0], still) });
     },
   );
 
@@ -164,7 +152,8 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ x, y, button, count, window_id, overlay }) => {
       allowed();
-      return json(await pointerInput(await pointIn(window_id, x, y), () => clickOps(button, count), { overlay }));
+      const { at, still } = await pointIn(window_id, x, y);
+      return json(await pointerInput(at, () => clickOps(button, count), { overlay, still }));
     },
   );
 
@@ -178,8 +167,9 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ from: a, to: b, button, window_id, overlay }) => {
       allowed();
-      const [from, to] = await fromWindow(window_id, [a, b]);
-      return json(await pointerInput(from, (outs) => dragOps(outs, from, to, button), { overlay }));
+      const { points, still } = await fromWindow(window_id, [a, b]);
+      const [from, to] = points;
+      return json(await pointerInput(from, (outs) => dragOps(outs, from, to, button), { overlay, still }));
     },
   );
 
@@ -200,7 +190,8 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ x, y, dx, dy, window_id, overlay }) => {
       allowed();
-      return json(await pointerInput(await pointIn(window_id, x, y), () => [{ op: "scroll", dx, dy }], { overlay }));
+      const { at, still } = await pointIn(window_id, x, y);
+      return json(await pointerInput(at, () => [{ op: "scroll", dx, dy }], { overlay, still }));
     },
   );
 };
@@ -214,12 +205,13 @@ function keyTarget(windowId: string | undefined, overlay: string | undefined): K
   throw new Error("Pass exactly one of window_id and overlay.");
 }
 
-/** A global point from optional coordinates, counted from a window when one is given: both or neither. */
+/** A global point from optional coordinates (both or neither), counted from a window when one is given, with fromWindow's check. */
 async function pointIn(windowId: string | undefined, x: number | undefined, y: number | undefined) {
   if ((x === undefined) !== (y === undefined)) throw new Error("Pass both x and y, or neither to use the pointer's position.");
   if (x === undefined || y === undefined) {
     if (windowId !== undefined) throw new Error("window_id needs x and y.");
-    return null;
+    return { at: null, still: undefined };
   }
-  return (await fromWindow(windowId, [{ x, y }]))[0];
+  const { points, still } = await fromWindow(windowId, [{ x, y }]);
+  return { at: points[0], still };
 }

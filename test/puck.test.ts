@@ -443,11 +443,13 @@ describe("accessibility coordinates", () => {
 });
 
 describe("which desktop", () => {
-  /** A fresh exec.ts whose `ward` is a script with this body. */
-  async function withWard(body: string) {
+  /** A fresh exec.ts whose `ward` is a script with this body, beside other fake commands. */
+  async function withWard(body: string, others: Record<string, string> = {}) {
     const bin = mkdtempSync(join(tmpdir(), "puck-ward-"));
-    writeFileSync(join(bin, "ward"), `#!/bin/sh\n${body}\n`);
-    chmodSync(join(bin, "ward"), 0o755);
+    for (const [name, script] of Object.entries({ ward: body, ...others })) {
+      writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
+      chmodSync(join(bin, name), 0o755);
+    }
     vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
     vi.stubEnv("WAYLAND_DISPLAY", "wayland-live");
     vi.resetModules();
@@ -509,15 +511,16 @@ describe("which desktop", () => {
   });
 
   it("refuses input on the live session without PUCK_INVASIVE, never on a private desktop", async () => {
-    const exec = await withWard(ward);
+    vi.stubEnv("PUCK_INVASIVE", "");
+    const exec = await withWard(ward, { umbriel: `[ "$1" = focused-window ] && { echo 'no focused window' >&2; exit 1; }; echo '[]'` });
     const { registerInvasive } = await import("../src/tools/invasive.ts");
     const tools = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
     registerInvasive({ registerTool: (name: string, _config: unknown, handler: never) => tools.set(name, handler) } as never, { owned: new Set() });
     const click = () => tools.get("click")!({ x: 1, y: 1, window_id: "none", button: "left", count: 1 });
     await expect(exec.onDesktop(click)).rejects.toThrow(/Refused on the user's live session/);
     exec.followPrivateDesktop(true);
-    // Past the refusal: it goes on to look for the window, on the private desktop.
-    await expect(exec.onDesktop(click)).rejects.not.toThrow(/Refused/);
+    // Past the refusal: it goes on to look for the window, on the private desktop, which has none.
+    await expect(exec.onDesktop(click)).rejects.toThrow(/No window with id none/);
   });
 
   it("refuses a layout snapshot taken on another desktop", async () => {

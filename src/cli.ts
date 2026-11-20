@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, parseRegion } from "./inspect.ts";
-import { pressKeys } from "./keys.ts";
+import { pressKeys, typeText } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "./pointer.ts";
 import { desktop, followPrivateDesktop, onDesktop } from "./exec.ts";
@@ -34,9 +34,12 @@ const usage = `Usage: puck <command>
   keys (--window ID | --overlay NS) CHORD…
                    Press key chords, e.g. ctrl+l Return, into a window or an overlay. Keys are
                    XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr
+  type --window ID TEXT
+                   Type text into a window, e.g. puck type --window ID 'echo hi' (then keys … Return)
 
 Window ids are the ones open and state print. Coordinates are logical pixels: global, or
-with --window ID counted from that window's top-left corner, as in a screenshot of it.
+with --window ID counted from that window's top-left corner (on a private desktop, the
+pixels of a screenshot of it; elsewhere a screenshot may be scaled).
 Input is refused while a shell surface has the keyboard; --overlay NS sends it into
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
 PUCK_OUTPUTS limits input to those outputs.
@@ -51,7 +54,7 @@ try {
   if (command === "mcp") await serveStdio();
   else if (command === "spend") console.log(JSON.stringify(await spendToday()));
   else if (command === "open") print(await openCommand(args));
-  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys"].includes(command)) {
+  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys", "type"].includes(command)) {
     console.error(usage);
     process.exit(command === "help" || command === "--help" ? 0 : 2);
   } else {
@@ -87,6 +90,12 @@ async function runCommand(): Promise<void> {
     case "keys":
       print(await keysCommand(args));
       break;
+    case "type": {
+      const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { window: { type: "string" } } });
+      if (values.window === undefined || !positionals.length) throw new Error("type needs --window ID and the text");
+      print(await typeText(values.window, positionals.join(" ")));
+      break;
+    }
   }
 }
 
@@ -151,10 +160,10 @@ async function pointerCommand(argv: string[]) {
       window: { type: "string" },
     },
   });
-  const opts = { overlay: values.overlay };
   const button: Button = oneOf(values.button, BUTTONS, "--button") ?? "left";
   if (values.window !== undefined && !positionals.length) throw new Error("--window needs X,Y");
-  const points = await fromWindow(values.window, positionals.map(parsePoint));
+  const { points, still } = await fromWindow(values.window, positionals.map(parsePoint));
+  const opts = { overlay: values.overlay, still };
   const int = (v: string, flag: string) => {
     const n = Number(v);
     if (!Number.isInteger(n)) throw new Error(`${flag} must be an integer`);
@@ -163,7 +172,7 @@ async function pointerCommand(argv: string[]) {
   switch (action) {
     case "move":
       if (points.length !== 1) throw new Error("pointer move needs X,Y");
-      return { moved_to: await movePointer(points[0]!) };
+      return { moved_to: await movePointer(points[0]!, still) };
     case "click":
       const count = Math.min(Math.max(int(values.count, "--count"), 1), 3);
       return pointerInput(points[0] ?? null, () => clickOps(button, count), opts);

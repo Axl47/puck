@@ -71,9 +71,21 @@ export function windowPoints(snap: Pick<Snapshot, "windows" | "outputs" | "focus
   });
 }
 
-/** windowPoints on the desktop as it is now; without a window the points are global already. */
+/**
+ * windowPoints on the desktop as it is now, with a check (`still`) for pointer
+ * input to run once it holds the desktop lock: another call may have moved the
+ * window while this one waited. Without a window the points are global already.
+ */
 export async function fromWindow<const P extends readonly Point[]>(windowId: string | undefined, points: P) {
-  return (windowId === undefined ? [...points] : windowPoints(await snapshot(), windowId, points)) as { -readonly [K in keyof P]: Point };
+  type Mapped = { -readonly [K in keyof P]: Point };
+  if (windowId === undefined) return { points: [...points] as Mapped, still: undefined };
+  const resolve = async () => windowPoints(await snapshot(), windowId, points);
+  const at = await resolve();
+  const still = async () => {
+    const now = await resolve();
+    if (now.some((p, i) => p.x !== at[i]?.x || p.y !== at[i]?.y)) throw new Error(`Window ${windowId} moved while the input waited; nothing was sent.`);
+  };
+  return { points: at as Mapped, still };
 }
 
 /** The bounding box of every enabled output, which Umbriel maps virtual-pointer absolute motion over. */
@@ -156,9 +168,10 @@ function assertPoints(outs: readonly Output[], points: readonly Point[]) {
   assertOutputs(...new Set(names));
 }
 
-/** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). */
-export async function movePointer(p: Point): Promise<Point> {
+/** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). `still`: fromWindow's check. */
+export async function movePointer(p: Point, still?: () => Promise<void>): Promise<Point> {
   return withDesktopLock(async () => {
+    await still?.();
     const outs = await outputs();
     assertPoints(outs, [p]);
     await pointerAct([moveOp(outs, p)]);
@@ -212,7 +225,7 @@ export function inputRefusal(all: readonly Layer[], overlay: string | undefined,
 export async function pointerInput(
   at: Point | null,
   input: (outs: readonly Output[]) => readonly PointerOp[],
-  opts: { overlay?: string | undefined } = {},
+  opts: { overlay?: string | undefined; /** fromWindow's check, run under the lock before anything moves. */ still?: (() => Promise<void>) | undefined } = {},
 ) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
@@ -245,6 +258,12 @@ export async function pointerInput(
       if (late) {
         focus.abandon(); // nothing was done
         throw new Error(late);
+      }
+      try {
+        await opts.still?.();
+      } catch (err) {
+        focus.abandon(); // nothing was done
+        throw err;
       }
       home = start;
       await pointerAct([moveOp(outs, target)]);

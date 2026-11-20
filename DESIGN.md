@@ -146,7 +146,8 @@ restarts under it.
   put a window in front of the user. So `launch_app` first starts the private
   desktop, like `puck open`, unless the agent chose the live session
   (`desktop_state` with `desktop: "live"`), and refuses where there is none to
-  start. Decided against: making every T3 thread private from its first call.
+  start. Which of the two a launch is, is decided as the call starts, so a
+  switch made while the desktop comes up can't move it to the user's screen. Decided against: making every T3 thread private from its first call.
   It would close the same hole with one condition in Ward, but takes the live
   session away from threads whose job is the user's desktop unless each asks
   for it; that is the user's call, and it stays a one-line change.
@@ -216,6 +217,13 @@ setting, which left an agent on its own desktop able to look but not act.)
   show.
 - `press_keys` refuses super chords; they are compositor shortcuts (close
   window, lock, switch workspace), not app input.
+- Known limit, found by a live test (2026-11-20): on a private desktop, key
+  shortcuts sent with `wtype` don't act in a GTK 3 app (Evince ignored Escape
+  in its file chooser and ctrl+o), while typed text arrives there, and a GTK 4
+  dialog (zenity) and a terminal take both. Holding the key, and keeping
+  wtype's keyboard alive after it, changed nothing, so it isn't the timing
+  that the held keyboard fixed for text; the cause is open. The tool says so,
+  and clicking the control works.
 - A picker overlay (slurp's `selection`) is sometimes exactly what an agent
   means to drive. `overlay: "<namespace>"` on `click`, `drag`, `scroll` and
   `press_keys` (`--overlay` on the CLI) allows input into that one namespace:
@@ -228,10 +236,11 @@ Pointer input is synthetic input like typing, so it sits in the invasive
 tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
 need no `PUCK_INVASIVE` (a script asks for them explicitly) but honour
 `PUCK_OUTPUTS`. Points are global, or with a window (`window_id`, `--window`)
-counted from its top-left corner, which is what an agent reading a screenshot
-of the window has; such a point is refused when it isn't showing there
-(scrolled away, covered, another workspace), since the click would land on
-something else.
+counted from its top-left corner, which on a private desktop (scale 1) is
+what an agent reading a screenshot of the window has; such a point is refused
+when it isn't showing there (scrolled away, covered, another workspace), since
+the click would land on something else, and checked again once the input holds
+the desktop lock, since another call may have moved the window meanwhile.
 
 ### Pointer
 
