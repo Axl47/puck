@@ -4,6 +4,7 @@ import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, par
 import { pressKeys, typeText } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "./pointer.ts";
+import { identifyCaller } from "./caller.ts";
 import { desktop, followPrivateDesktop, onDesktop } from "./exec.ts";
 import { open } from "./open.ts";
 import { serveStdio } from "./server.ts";
@@ -46,25 +47,38 @@ Input is refused while a shell surface has the keyboard; --overlay NS sends it i
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
 PUCK_OUTPUTS limits input to those outputs.
 An agent's commands act on its private desktop once it has one: in a ward always, in
-another T3 thread after its first \`puck open\`. PUCK_DESKTOP=live acts on the live session,
-and an agent's pointer, keys, type and focus commands reach it only with that.`;
+another T3 thread after its first \`puck open\`, and never fall back to the live session
+afterwards. PUCK_DESKTOP=live acts on the live session; pointer, keys, type and focus
+reach it only with that, unless run from a terminal of the user's own session.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
 const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
+const asksForLive = process.env.PUCK_DESKTOP === "live";
+const caller = identifyCaller();
 
 try {
   if (command === "mcp") await serveStdio();
   else if (command === "spend") console.log(JSON.stringify(await spendToday()));
-  else if (command === "open") print(await openCommand(args));
-  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys", "type", "focus"].includes(command)) {
+  else if (!["open", "state", "snapshot", "restore", "inspect", "pointer", "keys", "type", "focus"].includes(command)) {
     console.error(usage);
     process.exit(command === "help" || command === "--help" ? 0 : 2);
   } else {
-    // An agent's private desktop, if it has one: its shell has the live session's
-    // environment. Not for the user's own terminal, which is neither in a ward nor a T3 thread.
-    followPrivateDesktop(Boolean(process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live");
-    await onDesktop(runCommand);
+    if (caller.kind === "agent" && !asksForLive) {
+      // A launcher dropped the thread's id on the way here: `ward` finds the desktop by it.
+      if (caller.via === "parent") Object.assign(process.env, caller.thread && { T3CODE_THREAD_ID: caller.thread }, caller.ward && { WARD_ID: caller.ward });
+      if (caller.via === "cgroup") {
+        throw new Error(
+          "This runs in a T3 agent's processes, but neither its environment nor a parent's says which thread or ward (T3CODE_THREAD_ID, WARD_ID), so Puck can't find its private desktop and won't guess the user's screen. Run it from the thread's own shell, or with PUCK_DESKTOP=live for the user's screen.",
+        );
+      }
+    }
+    if (command === "open") print(await openCommand(args));
+    else {
+      // An agent's private desktop, if it has one: its shell has the live session's environment.
+      followPrivateDesktop(caller.kind === "agent" && !asksForLive);
+      await onDesktop(runCommand);
+    }
   }
 } catch (err) {
   console.error(`puck: ${err instanceof Error ? err.message : String(err)}`);
@@ -85,7 +99,7 @@ async function runCommand(): Promise<void> {
       print(await restoreLayout(loadLayout(arg)));
       break;
     case "inspect":
-      print(await inspectCommand(args));
+      print({ desktop: desktop(), ...(await inspectCommand(args)) });
       break;
     case "pointer":
       if (arg) assertInput();
@@ -111,14 +125,18 @@ async function runCommand(): Promise<void> {
 }
 
 /**
- * Input from an agent's shell reaches the user's live session only when the
- * agent asked for that: before its first open its commands still resolve there.
- * The user's own terminal is neither in a ward nor a T3 thread, and is free.
+ * Input reaches the user's live session only from the user's own terminal, or
+ * with PUCK_DESKTOP=live: an agent's commands still resolve there before its
+ * first open, and a command that can't be placed (a service, a systemd-run
+ * unit) may be an agent's that lost its thread on the way.
  */
 function assertInput(): void {
-  if (desktop() === "live" && (process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live") {
-    throw new Error("This would act on the user's live session. For your own private desktop, open something there first (`puck open CMD`); for the user's screen, run it with PUCK_DESKTOP=live.");
-  }
+  if (desktop() !== "live" || caller.kind === "user" || asksForLive) return;
+  throw new Error(
+    caller.kind === "agent"
+      ? "This would act on the user's live session. For your own private desktop, open something there first (`puck open CMD`); for the user's screen, run it with PUCK_DESKTOP=live."
+      : "This would act on the user's live session, and Puck can't tell this command comes from the user: it isn't in a terminal of the user's session. Run it with PUCK_DESKTOP=live if it should.",
+  );
 }
 
 function openCommand(argv: string[]) {

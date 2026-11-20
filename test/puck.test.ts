@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { chmodSync, linkSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -452,10 +454,21 @@ describe("which desktop", () => {
     }
     vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
     vi.stubEnv("WAYLAND_DISPLAY", "wayland-live");
+    vi.stubEnv("T3CODE_THREAD_ID", "");
+    vi.stubEnv("WARD_ID", "");
+    // Puck's notes of threads that had a private desktop live in the account's home folder.
+    const home = mkdtempSync(join(tmpdir(), "puck-home-"));
+    vi.doMock("node:os", async (real: () => Promise<typeof import("node:os")>) => {
+      const os = await real();
+      return { ...os, userInfo: () => ({ ...os.userInfo(), homedir: home }) };
+    });
     vi.resetModules();
     return import("../src/exec.ts");
   }
-  afterEach(() => vi.unstubAllEnvs());
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.doUnmock("node:os");
+  });
 
   const ward = "printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'";
 
@@ -495,6 +508,42 @@ describe("which desktop", () => {
     exec.followPrivateDesktop(true);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
+  });
+
+  it("never puts a thread that had a private desktop back on the live session", async () => {
+    vi.stubEnv("PUCK_TEST_GONE", "");
+    const exec = await withWard(`[ -n "$PUCK_TEST_GONE" ] && { echo 'ward: this thread has no desktop yet' >&2; exit 3; }; ${ward}`);
+    vi.stubEnv("T3CODE_THREAD_ID", "thread-a");
+    exec.followPrivateDesktop(true);
+    expect(await exec.onDesktop(exec.desktop)).toBe("private");
+    vi.stubEnv("PUCK_TEST_GONE", "1"); // Ward forgot the thread
+    await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/had a private desktop.*won't fall back/);
+    // Another thread that never had one is still on the live session, and the user's choice still holds.
+    vi.stubEnv("T3CODE_THREAD_ID", "thread-b");
+    expect(await exec.onDesktop(exec.desktop)).toBe("live");
+    vi.stubEnv("T3CODE_THREAD_ID", "thread-a");
+    exec.followPrivateDesktop(false);
+    expect(await exec.onDesktop(exec.desktop)).toBe("live");
+  });
+
+  it("refuses a private desktop whose environment leads to the live session", async () => {
+    const exec = await withWard(ward);
+    const session = mkdtempSync(join(tmpdir(), "puck-session-"));
+    const other = mkdtempSync(join(tmpdir(), "puck-other-"));
+    const server = createServer().listen(join(session, "wayland-1"));
+    await once(server, "listening");
+    try {
+      const vars = { XDG_RUNTIME_DIR: other, WAYLAND_DISPLAY: "wayland-0", DBUS_SESSION_BUS_ADDRESS: `unix:path=${other}/bus` };
+      expect(exec.namesLiveSession(vars, session)).toBe(false);
+      expect(exec.namesLiveSession({ ...vars, XDG_RUNTIME_DIR: session }, session)).toBe(true);
+      symlinkSync(join(session, "wayland-1"), join(other, "wayland-0"));
+      expect(exec.namesLiveSession(vars, session)).toBe(true);
+      rmSync(join(other, "wayland-0"));
+      linkSync(join(session, "wayland-1"), join(other, "bus")); // a hard link reaches the same server
+      expect(exec.namesLiveSession(vars, session)).toBe(true);
+    } finally {
+      server.close();
+    }
   });
 
   it("reports a private desktop that didn't start instead of falling back to the live session", async () => {
