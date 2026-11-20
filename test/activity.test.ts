@@ -42,6 +42,8 @@ describe("sanitizeArgs", () => {
       keys: ["ctrl+a", "Enter"],
       typed: 3,
     });
+    // A shifted character gives away a capital or a symbol, and a word may be the password itself.
+    expect(sanitizeArgs("press_keys", { keys: ["shift+h", "shift+1", "hunter2", "super+shift+q", "F5"] })).toEqual({ keys: ["super+shift+q", "F5"], typed: 3 });
   });
 
   it("cuts long strings and arrays at any depth and drops what isn't JSON", () => {
@@ -107,11 +109,23 @@ describe("record", () => {
     });
   });
 
-  it("records a throw as not ok", () => {
+  it("records a throw as not ok, with its message", () => {
     switchOn();
-    record({ ...event, outcome: { thrown: new Error("Refused on the live session") } });
+    record({ ...event, tool: "click", args: { window_id: "w1" }, outcome: { thrown: new Error("Refused on the live session") } });
     const [file] = records();
     expect(JSON.parse(readFileSync(join(dir, file ?? ""), "utf8"))).toMatchObject({ ok: false, error: "Refused on the live session" });
+  });
+
+  it("never records a typing tool's error message, which can repeat what was typed", () => {
+    switchOn();
+    record({ ...event, outcome: { thrown: new Error("Command failed: wtype -- hunter2") } });
+    record({ ...event, tool: "press_keys", args: { keys: ["h"] }, outcome: { result: { isError: true, content: [{ type: "text", text: "Unknown key: hunter2" }] } } });
+    const texts = records().map((f) => readFileSync(join(dir, f), "utf8"));
+    expect(texts).toHaveLength(2);
+    for (const text of texts) {
+      expect(text).not.toContain("hunter2");
+      expect(JSON.parse(text)).toMatchObject({ ok: false });
+    }
   });
 
   it("writes nothing when off", () => {

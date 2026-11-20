@@ -53,8 +53,22 @@ function clean(value: unknown, depth = 0): unknown {
 const TypeTextArgs = z.looseObject({ text: z.string() });
 const PressKeysArgs = z.looseObject({ keys: z.array(z.string()) });
 
-/** A chord (`ctrl+s`) or a named key (`Enter`, `F5`) says what was pressed; a single character may be part of a password. */
-const isNamedKey = (key: string) => key.includes("+") || [...key].length > 1;
+/** Keys that type nothing: safe to name. Anything else that is one "word" could be text. */
+const NAMED_KEY = /^(?:enter|return|tab|escape|esc|backspace|delete|insert|home|end|page_?up|page_?down|prior|next|up|down|left|right|space|menu|print|pause|caps_lock|f\d{1,2})$/i;
+const COMMAND_MODIFIER = /^(?:ctrl|control|alt|super|meta|logo|mod\d?|win|cmd)$/i;
+
+/**
+ * Whether a key says what was done rather than what was typed: a named key (`Enter`, `F5`) or
+ * a chord with a command modifier (`ctrl+s`, `super+shift+q`). A character, with or without
+ * shift, may be part of a password (`shift+h` gives away a capital), and so may any other word.
+ */
+const isNamedKey = (key: string) => {
+  const parts = key.split("+");
+  return parts.length > 1 ? parts.slice(0, -1).some((m) => COMMAND_MODIFIER.test(m)) : NAMED_KEY.test(key);
+};
+
+/** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments). */
+const TYPING_TOOLS = new Set(["type_text", "press_keys"]);
 
 /** A tool's arguments for the record: typed text reduced to its length, single character keys to a count, long values cut. */
 export function sanitizeArgs(tool: string, args: unknown): unknown {
@@ -179,7 +193,8 @@ export function record(event: ActivityEvent): void {
     const failure = "thrown" in outcome ? (outcome.thrown instanceof Error ? outcome.thrown.message : String(outcome.thrown)) : undefined;
     const result = "result" in outcome ? outcome.result : undefined;
     const flagged = ToolResult.safeParse(result).data?.isError === true;
-    const message = failure ?? (flagged ? firstText(result) : undefined);
+    const failed = failure !== undefined || flagged;
+    const message = !failed ? undefined : TYPING_TOOLS.has(event.tool) ? "failed (the message may repeat what was typed, so it isn't recorded)" : (failure ?? firstText(result));
     const body = {
       v: 1,
       scope,
