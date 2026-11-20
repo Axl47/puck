@@ -235,12 +235,20 @@ setting, which left an agent on its own desktop able to look but not act.)
 Pointer input is synthetic input like typing, so it sits in the invasive
 tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
 need no `PUCK_INVASIVE` (a script asks for them explicitly) but honour
-`PUCK_OUTPUTS`. Points are global, or with a window (`window_id`, `--window`)
+`PUCK_OUTPUTS`. From an agent's shell (a ward or a T3 thread) the input
+commands (`pointer move|click|drag|scroll`, `keys`, `type`, `focus`) act on the live
+session only with `PUCK_DESKTOP=live`: before its first open an agent's
+commands still resolve there, and a stray `puck type` would land in the
+user's app. Points are global, or with a window (`window_id`, `--window`)
 counted from its top-left corner, which on a private desktop (scale 1) is
 what an agent reading a screenshot of the window has; such a point is refused
 when it isn't showing there (scrolled away, covered, another workspace), since
-the click would land on something else, and checked again once the input holds
-the desktop lock, since another call may have moved the window meanwhile.
+the click would land on something else, and checked again under the desktop
+lock, the last time right before the press, since another call or a window
+that opens meanwhile shifts the others. What moves in the last instant (the
+helper's start, some tens of ms) isn't caught: a live test that opened a
+terminal 40–70 ms into a click saw the click land on the terminal. `puck
+focus ID` (`focus_window`) brings a scrolled-away window back first.
 
 ### Pointer
 

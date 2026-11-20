@@ -42,6 +42,18 @@ async function placement(ids: readonly string[]) {
   });
 }
 
+/** Gives a window keyboard focus, bringing it into view, and leaves it there. Returns where it ended up. */
+export function focusWindow(id: string) {
+  return withFocus(
+    async (focus) => {
+      assertOutputs(findWindow(await snapshot(), id).output);
+      await focus.on(id);
+      return placement([id]);
+    },
+    { restoreFocus: false, shows: "all" },
+  );
+}
+
 export const registerArrange: Register = (server, session) => {
   server.registerTool(
     "focus_window",
@@ -51,15 +63,7 @@ export const registerArrange: Register = (server, session) => {
       inputSchema: { window_id: z.string() },
       annotations: reversible,
     },
-    async ({ window_id }) =>
-      withFocus(
-        async (focus) => {
-          assertOutputs(findWindow(await snapshot(), window_id).output);
-          await focus.on(window_id);
-          return json(await placement([window_id]));
-        },
-        { restoreFocus: false, shows: "all" },
-      ),
+    async ({ window_id }) => json(await focusWindow(window_id)),
   );
 
   server.registerTool(

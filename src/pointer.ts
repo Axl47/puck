@@ -66,7 +66,7 @@ export function windowPoints(snap: Pick<Snapshot, "windows" | "outputs" | "focus
   return points.map((p) => {
     const at = { x: w.x + p.x, y: w.y + p.y };
     if (!contains({ x: 0, y: 0, width: w.w, height: w.h }, p)) throw new Error(`${p.x},${p.y} is outside window ${windowId}, which is ${w.w}×${w.h}.`);
-    if (windowAt(snap, at)?.id !== w.id) throw new Error(`${p.x},${p.y} of window ${windowId} isn't showing (hidden, scrolled away or covered); focus the window first.`);
+    if (windowAt(snap, at)?.id !== w.id) throw new Error(`${p.x},${p.y} of window ${windowId} isn't showing (hidden, scrolled away or covered); focus the window first (focus_window, or puck focus ID in a shell).`);
     return at;
   });
 }
@@ -274,6 +274,14 @@ export async function pointerInput(
         throw new Error(
           `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
         );
+      }
+      // Once more, as late as it can be: a window that opens meanwhile shifts the others.
+      // What moves in the instant between this and the press isn't caught.
+      try {
+        await opts.still?.();
+      } catch (err) {
+        focus.abandon(); // nothing was pressed
+        throw err;
       }
       await pointerAct(ops);
       if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard

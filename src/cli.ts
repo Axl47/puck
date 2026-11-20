@@ -8,6 +8,7 @@ import { desktop, followPrivateDesktop, onDesktop } from "./exec.ts";
 import { open } from "./open.ts";
 import { serveStdio } from "./server.ts";
 import { spendToday } from "./t3.ts";
+import { focusWindow } from "./tools/arrange.ts";
 import { describeDesktop } from "./tools/observe.ts";
 import { snapshot } from "./umbriel.ts";
 
@@ -36,6 +37,7 @@ const usage = `Usage: puck <command>
                    XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr
   type --window ID TEXT
                    Type text into a window, e.g. puck type --window ID 'echo hi' (then keys … Return)
+  focus ID         Give a window the keyboard and bring it into view (one scrolled away can't be clicked)
 
 Window ids are the ones open and state print. Coordinates are logical pixels: global, or
 with --window ID counted from that window's top-left corner (on a private desktop, the
@@ -44,7 +46,8 @@ Input is refused while a shell surface has the keyboard; --overlay NS sends it i
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
 PUCK_OUTPUTS limits input to those outputs.
 An agent's commands act on its private desktop once it has one: in a ward always, in
-another T3 thread after its first \`puck open\`. PUCK_DESKTOP=live acts on the live session.`;
+another T3 thread after its first \`puck open\`. PUCK_DESKTOP=live acts on the live session,
+and an agent's pointer, keys, type and focus commands reach it only with that.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
@@ -54,7 +57,7 @@ try {
   if (command === "mcp") await serveStdio();
   else if (command === "spend") console.log(JSON.stringify(await spendToday()));
   else if (command === "open") print(await openCommand(args));
-  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys", "type"].includes(command)) {
+  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys", "type", "focus"].includes(command)) {
     console.error(usage);
     process.exit(command === "help" || command === "--help" ? 0 : 2);
   } else {
@@ -85,17 +88,36 @@ async function runCommand(): Promise<void> {
       print(await inspectCommand(args));
       break;
     case "pointer":
+      if (arg) assertInput();
       print(await pointerCommand(args));
       break;
     case "keys":
+      assertInput();
       print(await keysCommand(args));
       break;
+    case "focus":
+      assertInput();
+      if (!arg) throw new Error("focus needs a window id");
+      print(await focusWindow(arg));
+      break;
     case "type": {
+      assertInput();
       const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { window: { type: "string" } } });
       if (values.window === undefined || !positionals.length) throw new Error("type needs --window ID and the text");
       print(await typeText(values.window, positionals.join(" ")));
       break;
     }
+  }
+}
+
+/**
+ * Input from an agent's shell reaches the user's live session only when the
+ * agent asked for that: before its first open its commands still resolve there.
+ * The user's own terminal is neither in a ward nor a T3 thread, and is free.
+ */
+function assertInput(): void {
+  if (desktop() === "live" && (process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live") {
+    throw new Error("This would act on the user's live session. For your own private desktop, open something there first (`puck open CMD`); for the user's screen, run it with PUCK_DESKTOP=live.");
   }
 }
 

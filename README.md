@@ -54,7 +54,7 @@ On a private desktop the input tools (click, type, keys, close) always work, sin
 An MCP server that isn't told its thread (Codex's, today) can't find a thread's desktop, so it stays on the live session, where it refuses input and `launch_app`; the `puck` CLI in the agent's shell does everything there instead.
 
 - **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"private"` moves it back).
-- **CLI:** `puck state` says which. For an agent (in a ward or a T3 thread) it is the private desktop when there is one; `PUCK_DESKTOP=live puck …` acts on your screen. In your own terminal it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
+- **CLI:** `puck state` says which. For an agent (in a ward or a T3 thread) it is the private desktop when there is one; `PUCK_DESKTOP=live puck …` acts on your screen, and an agent's input commands reach it only with that. In your own terminal it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
 
 A private desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply. A layout snapshot restores only on the desktop it was taken on.
 
@@ -64,7 +64,7 @@ A private desktop is one 1280×720 output with no shell, so `notifications`, `di
 |---|---|---|
 | Observe | `desktop_state`, `screenshot`, `notifications`, `inspect` | `puck state`, `puck inspect …`, `puck pointer` |
 | Arrange | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` | `puck open CMD`, `puck snapshot`, `puck restore` |
-| Invasive (on the live session only with `PUCK_INVASIVE=1`) | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` | `puck pointer move\|click\|drag\|scroll`, `puck keys`, `puck type` |
+| Invasive (on the live session only with `PUCK_INVASIVE=1`) | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` | `puck pointer move\|click\|drag\|scroll`, `puck keys`, `puck type`, `puck focus` |
 
 ```sh
 puck inspect (--region X,Y,WxH | --window ID | --point X,Y | --pointer) \
