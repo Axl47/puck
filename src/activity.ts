@@ -32,7 +32,8 @@ export function recording(now = Date.now()): boolean {
   }
 }
 
-const cut = (s: string) => (s.length > TEXT_LIMIT ? s.slice(0, TEXT_LIMIT) : s);
+/** Cut a long string, without its last word: half a token is no longer something a redactor recognises. */
+const cut = (s: string) => (s.length > TEXT_LIMIT ? `${s.slice(0, TEXT_LIMIT).replace(/\S+$/, "")}…` : s);
 
 /** A JSON-safe copy with long strings and arrays cut; whatever JSON can't hold is dropped. */
 function clean(value: unknown, depth = 0): unknown {
