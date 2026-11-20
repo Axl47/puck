@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { run, sleep } from "./exec.ts";
 import { assertOutputs } from "./scope.ts";
-import { type Layer, type Output, type Window, layers, outputs, withDesktopLock, withFocus } from "./umbriel.ts";
+import { type Layer, type Output, type Snapshot, type Window, findWindow, layers, outputs, snapshot, withDesktopLock, withFocus } from "./umbriel.ts";
 
 // Pointer reading and input. Umbriel's IPC has neither, so both go through
 // helpers/wl.py, a small Wayland client (see its docstring).
@@ -53,6 +53,39 @@ export function windowAt(snap: { windows: readonly Window[]; outputs: readonly O
   const rank = (w: Window) => (w.fullscreen ? 4 : 0) + (w.floating ? 2 : 0) + (w.id === snap.focused?.id ? 1 : 0);
   const under = snap.windows.filter((w) => w.visible && !w.minimized && w.output === out.name && contains(windowRect(w), p));
   return under.sort((a, b) => rank(b) - rank(a))[0] ?? null;
+}
+
+/**
+ * Points counted from a window's top-left corner, as in a screenshot of it, as
+ * global ones. Throws for a point that isn't showing there (off the window,
+ * scrolled away, covered, another workspace), which input would send to
+ * something else.
+ */
+export function windowPoints(snap: Pick<Snapshot, "windows" | "outputs" | "focused">, windowId: string, points: readonly Point[]): Point[] {
+  const w = findWindow(snap, windowId);
+  return points.map((p) => {
+    const at = { x: w.x + p.x, y: w.y + p.y };
+    if (!contains({ x: 0, y: 0, width: w.w, height: w.h }, p)) throw new Error(`${p.x},${p.y} is outside window ${windowId}, which is ${w.w}×${w.h}.`);
+    if (windowAt(snap, at)?.id !== w.id) throw new Error(`${p.x},${p.y} of window ${windowId} isn't showing (hidden, scrolled away or covered); focus the window first (focus_window, or puck focus ID in a shell).`);
+    return at;
+  });
+}
+
+/**
+ * windowPoints on the desktop as it is now, with a check (`still`) for pointer
+ * input to run once it holds the desktop lock: another call may have moved the
+ * window while this one waited. Without a window the points are global already.
+ */
+export async function fromWindow<const P extends readonly Point[]>(windowId: string | undefined, points: P) {
+  type Mapped = { -readonly [K in keyof P]: Point };
+  if (windowId === undefined) return { points: [...points] as Mapped, still: undefined };
+  const resolve = async () => windowPoints(await snapshot(), windowId, points);
+  const at = await resolve();
+  const still = async () => {
+    const now = await resolve();
+    if (now.some((p, i) => p.x !== at[i]?.x || p.y !== at[i]?.y)) throw new Error(`Window ${windowId} moved while the input waited; nothing was sent.`);
+  };
+  return { points: at as Mapped, still };
 }
 
 /** The bounding box of every enabled output, which Umbriel maps virtual-pointer absolute motion over. */
@@ -135,9 +168,10 @@ function assertPoints(outs: readonly Output[], points: readonly Point[]) {
   assertOutputs(...new Set(names));
 }
 
-/** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). */
-export async function movePointer(p: Point): Promise<Point> {
+/** Moves the pointer to a point and leaves it there (focus follows it if the user's config says so). `still`: fromWindow's check. */
+export async function movePointer(p: Point, still?: () => Promise<void>): Promise<Point> {
   return withDesktopLock(async () => {
+    await still?.();
     const outs = await outputs();
     assertPoints(outs, [p]);
     await pointerAct([moveOp(outs, p)]);
@@ -191,7 +225,7 @@ export function inputRefusal(all: readonly Layer[], overlay: string | undefined,
 export async function pointerInput(
   at: Point | null,
   input: (outs: readonly Output[]) => readonly PointerOp[],
-  opts: { overlay?: string | undefined } = {},
+  opts: { overlay?: string | undefined; /** fromWindow's check, run under the lock before anything moves. */ still?: (() => Promise<void>) | undefined } = {},
 ) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
@@ -225,16 +259,32 @@ export async function pointerInput(
         focus.abandon(); // nothing was done
         throw new Error(late);
       }
+      try {
+        await opts.still?.();
+      } catch (err) {
+        focus.abandon(); // nothing was done
+        throw err;
+      }
       home = start;
       await pointerAct([moveOp(outs, target)]);
+      // Once more, late: a window that opens meanwhile shifts the others. Its refusal waits
+      // for the pointer check, then takes the usual way out, which puts the pointer back.
+      // What moves between this and the press isn't caught.
+      const moved = await opts.still?.().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
+      // Last, so nothing comes between it and the press: the user's mouse.
       const landed = await probePointer(outs);
       if (landed.x !== target.x || landed.y !== target.y) {
         home = undefined; // leave the mouse to the user
         focus.abandon();
-        throw new Error(
-          `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
+        throw (
+          moved ??
+          new Error(`The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`)
         );
       }
+      if (moved) throw moved;
       await pointerAct(ops);
       if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard
       await focus.settle(); // a click focuses what it hit; withFocus then hands focus back

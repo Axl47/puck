@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, parseRegion } from "./inspect.ts";
-import { pressKeys } from "./keys.ts";
+import { pressKeys, typeText } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
-import { BUTTONS, type Button, clickOps, dragOps, movePointer, pointerInput } from "./pointer.ts";
-import { desktop, followWardDesktop, onDesktop } from "./exec.ts";
+import { BUTTONS, type Button, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "./pointer.ts";
+import { desktop, followPrivateDesktop, onDesktop } from "./exec.ts";
+import { open } from "./open.ts";
 import { serveStdio } from "./server.ts";
 import { spendToday } from "./t3.ts";
+import { focusWindow } from "./tools/arrange.ts";
 import { describeDesktop } from "./tools/observe.ts";
 import { snapshot } from "./umbriel.ts";
 
 const usage = `Usage: puck <command>
 
-  mcp              Run the MCP server on stdio (PUCK_INVASIVE=1 adds close, kill and typing)
-  state            Print the desktop as agents see it
+  mcp              Run the MCP server on stdio (PUCK_INVASIVE=1 lets close, kill and input act on the live session)
+  open [--wait SECONDS] [--] CMD…
+                   Run CMD on your private desktop, which the user doesn't see (your ward's,
+                   or your T3 thread's own, started if needed), and print the window it opens
+                   (waits 15 s unless told otherwise). CMD keeps running; its output goes to the file printed as log
+  state            Print the desktop as agents see it, with every window's id
   snapshot [out…]  Save the layout of the given outputs (all when none) and print its id
   restore <id>     Put a saved layout back
   spend            Print today's agent spend from T3 as JSON
@@ -21,18 +27,27 @@ const usage = `Usage: puck <command>
           [--text auto|accessibility|ocr|none] [--screenshot PATH] [--json]
                    What is there: window, process, URL, accessible element, text
   pointer          What is under the pointer (inspect --pointer --text none)
-  pointer move X,Y
-  pointer click [X,Y] [--button left|right|middle] [--count N] [--overlay NS]
-  pointer drag X,Y X,Y [--button …] [--overlay NS]
-  pointer scroll [X,Y] [--dx N] [--dy N] [--overlay NS]   (wheel steps; --dy=-3 scrolls up)
+  pointer move X,Y [--window ID]
+  pointer click [X,Y] [--window ID] [--button left|right|middle] [--count N] [--overlay NS]
+  pointer drag X,Y X,Y [--window ID] [--button …] [--overlay NS]
+  pointer scroll [X,Y] [--window ID] [--dx N] [--dy N] [--overlay NS]   (wheel steps; --dy=-3 scrolls up)
                    Pointer input; click, drag and scroll put the pointer and focus back
   keys (--window ID | --overlay NS) CHORD…
-                   Press key chords, e.g. ctrl+l Return, into a window or an overlay
+                   Press key chords, e.g. ctrl+l Return, into a window or an overlay. Keys are
+                   XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr
+  type --window ID TEXT
+                   Type text into a window, e.g. puck type --window ID 'echo hi' (then keys … Return)
+  focus ID         Give a window the keyboard and bring it into view (one scrolled away can't be clicked)
 
+Window ids are the ones open and state print. Coordinates are logical pixels: global, or
+with --window ID counted from that window's top-left corner (on a private desktop, the
+pixels of a screenshot of it; elsewhere a screenshot may be scaled).
 Input is refused while a shell surface has the keyboard; --overlay NS sends it into
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
-Coordinates are global logical pixels. PUCK_OUTPUTS limits input to those outputs.
-In a ward, commands act on its private desktop; PUCK_DESKTOP=live acts on the live session.`;
+PUCK_OUTPUTS limits input to those outputs.
+An agent's commands act on its private desktop once it has one: in a ward always, in
+another T3 thread after its first \`puck open\`. PUCK_DESKTOP=live acts on the live session,
+and an agent's pointer, keys, type and focus commands reach it only with that.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
@@ -41,12 +56,14 @@ const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 try {
   if (command === "mcp") await serveStdio();
   else if (command === "spend") console.log(JSON.stringify(await spendToday()));
-  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys"].includes(command)) {
+  else if (command === "open") print(await openCommand(args));
+  else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys", "type", "focus"].includes(command)) {
     console.error(usage);
     process.exit(command === "help" || command === "--help" ? 0 : 2);
   } else {
-    // In a ward, its desktop: an agent's shell there has the live session's environment.
-    followWardDesktop(Boolean(process.env.WARD_ID) && process.env.PUCK_DESKTOP !== "live");
+    // An agent's private desktop, if it has one: its shell has the live session's
+    // environment. Not for the user's own terminal, which is neither in a ward nor a T3 thread.
+    followPrivateDesktop(Boolean(process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live");
     await onDesktop(runCommand);
   }
 } catch (err) {
@@ -71,12 +88,52 @@ async function runCommand(): Promise<void> {
       print(await inspectCommand(args));
       break;
     case "pointer":
+      if (arg) assertInput();
       print(await pointerCommand(args));
       break;
     case "keys":
+      assertInput();
       print(await keysCommand(args));
       break;
+    case "focus":
+      assertInput();
+      if (!arg) throw new Error("focus needs a window id");
+      print(await focusWindow(arg));
+      break;
+    case "type": {
+      assertInput();
+      const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { window: { type: "string" } } });
+      if (values.window === undefined || !positionals.length) throw new Error("type needs --window ID and the text");
+      print(await typeText(values.window, positionals.join(" ")));
+      break;
+    }
   }
+}
+
+/**
+ * Input from an agent's shell reaches the user's live session only when the
+ * agent asked for that: before its first open its commands still resolve there.
+ * The user's own terminal is neither in a ward nor a T3 thread, and is free.
+ */
+function assertInput(): void {
+  if (desktop() === "live" && (process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live") {
+    throw new Error("This would act on the user's live session. For your own private desktop, open something there first (`puck open CMD`); for the user's screen, run it with PUCK_DESKTOP=live.");
+  }
+}
+
+function openCommand(argv: string[]) {
+  // Only what comes before the command is Puck's: the command's own flags stay with it.
+  let rest = argv;
+  let seconds = 15;
+  const wait = /^--wait(?:=(.*))?$/.exec(rest[0] ?? "");
+  if (wait) {
+    seconds = Number(wait[1] ?? rest[1]);
+    if (!(seconds > 0)) throw new Error("--wait takes a number of seconds");
+    rest = rest.slice(wait[1] === undefined ? 2 : 1);
+  }
+  if (rest[0] === "--") rest = rest.slice(1);
+  else if (rest[0]?.startsWith("-")) throw new Error(`Unknown option ${rest[0]}; put -- before a command that starts with a dash.`);
+  return open(rest, seconds * 1000);
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], flag: string): T | undefined {
@@ -122,11 +179,13 @@ async function pointerCommand(argv: string[]) {
       dx: { type: "string", default: "0" },
       dy: { type: "string", default: "0" },
       overlay: { type: "string" },
+      window: { type: "string" },
     },
   });
-  const opts = { overlay: values.overlay };
   const button: Button = oneOf(values.button, BUTTONS, "--button") ?? "left";
-  const points = positionals.map(parsePoint);
+  if (values.window !== undefined && !positionals.length) throw new Error("--window needs X,Y");
+  const { points, still } = await fromWindow(values.window, positionals.map(parsePoint));
+  const opts = { overlay: values.overlay, still };
   const int = (v: string, flag: string) => {
     const n = Number(v);
     if (!Number.isInteger(n)) throw new Error(`${flag} must be an integer`);
@@ -135,7 +194,7 @@ async function pointerCommand(argv: string[]) {
   switch (action) {
     case "move":
       if (points.length !== 1) throw new Error("pointer move needs X,Y");
-      return { moved_to: await movePointer(points[0]!) };
+      return { moved_to: await movePointer(points[0]!, still) };
     case "click":
       const count = Math.min(Math.max(int(values.count, "--count"), 1), 3);
       return pointerInput(points[0] ?? null, () => clickOps(button, count), opts);

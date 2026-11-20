@@ -109,6 +109,26 @@ export function overlayKeysRefusal(all: readonly Layer[], overlay: string, allow
   return null;
 }
 
+const TYPE_CHUNK = 64;
+
+/** Focuses a window and types text into it as keyboard input, then gives focus back. */
+export function typeText(windowId: string, text: string) {
+  return withFocus(
+    async (focus) => {
+      const check = await focusForInput(focus, windowId);
+      // In chunks (of code points, so emoji stay whole), re-checking focus between them.
+      const chars = Array.from(text);
+      for (let i = 0; i < chars.length; i += TYPE_CHUNK) {
+        if (i > 0) await check(`${i} characters`);
+        await run("wtype", ["--", chars.slice(i, i + TYPE_CHUNK).join("")], { timeoutMs: 30_000 });
+      }
+      await check(null);
+      return { typed: chars.length };
+    },
+    { restoreFocus: true },
+  );
+}
+
 export type KeyTarget = { window: string } | { overlay: string };
 
 /**

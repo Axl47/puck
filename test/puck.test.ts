@@ -10,7 +10,7 @@ import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { cleanForOcr, digitZeros, type Gray, parsePnm, toInk } from "../src/ocr.ts";
-import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt } from "../src/pointer.ts";
+import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs, overlayKeysRefusal } from "../src/keys.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
@@ -295,6 +295,12 @@ describe("onScreen", () => {
     expect(onScreen({ ...spotify, minimized: true }, snap.outputs)).toBeNull();
   });
 
+  it("counts a point from a window's corner, and refuses one that isn't showing there", () => {
+    expect(windowPoints(snap, spotify.id, [{ x: 10, y: 20 }])).toEqual([{ x: spotify.x + 10, y: spotify.y + 20 }]);
+    expect(() => windowPoints(snap, spotify.id, [{ x: spotify.w, y: 0 }])).toThrow(/outside window/);
+    expect(() => windowPoints(snap, t3.id, [{ x: 10, y: 20 }])).toThrow(/isn't showing/);
+  });
+
   it("is in the desktop view with whether the workspace is shown", () => {
     const view = describeDesktop(snap, new Set());
     expect(view.windows.find((w) => w.id === t3.id)).toMatchObject({ output: "DP-2", workspace_active: false, on_screen: null });
@@ -437,11 +443,13 @@ describe("accessibility coordinates", () => {
 });
 
 describe("which desktop", () => {
-  /** A fresh exec.ts whose `ward` is a script with this body. */
-  async function withWard(body: string) {
+  /** A fresh exec.ts whose `ward` is a script with this body, beside other fake commands. */
+  async function withWard(body: string, others: Record<string, string> = {}) {
     const bin = mkdtempSync(join(tmpdir(), "puck-ward-"));
-    writeFileSync(join(bin, "ward"), `#!/bin/sh\n${body}\n`);
-    chmodSync(join(bin, "ward"), 0o755);
+    for (const [name, script] of Object.entries({ ward: body, ...others })) {
+      writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
+      chmodSync(join(bin, name), 0o755);
+    }
     vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
     vi.stubEnv("WAYLAND_DISPLAY", "wayland-live");
     vi.resetModules();
@@ -451,13 +459,13 @@ describe("which desktop", () => {
 
   const ward = "printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'";
 
-  it("follows the ward's desktop only when told to, and takes its whole environment", async () => {
+  it("follows the private desktop only when told to, and takes its whole environment", async () => {
     vi.stubEnv("AT_SPI_BUS_ADDRESS", "unix:path=/run/live/at-spi");
     const exec = await withWard(ward);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
-    exec.followWardDesktop(true);
-    expect(await exec.onDesktop(exec.desktop)).toBe("ward");
+    exec.followPrivateDesktop(true);
+    expect(await exec.onDesktop(exec.desktop)).toBe("private");
     expect(await exec.onDesktop(exec.desktopEnv)).toMatchObject({
       XDG_RUNTIME_DIR: "/run/w/desktop",
       WAYLAND_DISPLAY: "wayland-0",
@@ -469,49 +477,69 @@ describe("which desktop", () => {
 
   it("keeps a call on the desktop it started on when another call switches", async () => {
     const exec = await withWard(ward);
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     let switched = () => {};
     const waiting = new Promise<void>((resolve) => (switched = resolve));
     const call = exec.onDesktop(async () => {
       await waiting;
       return [exec.desktop(), exec.desktopEnv().WAYLAND_DISPLAY];
     });
-    exec.followWardDesktop(false);
+    exec.followPrivateDesktop(false);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     switched();
-    expect(await call).toEqual(["ward", "wayland-0"]);
+    expect(await call).toEqual(["private", "wayland-0"]);
   });
 
-  it("is the live session where Ward says the folder has no ward", async () => {
+  it("is the live session where Ward says there is no private desktop", async () => {
     const exec = await withWard("exit 3");
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
   });
 
-  it("reports a ward desktop that didn't start instead of falling back to the live session", async () => {
+  it("reports a private desktop that didn't start instead of falling back to the live session", async () => {
     const exec = await withWard("echo 'ward: its desktop failed to start' >&2; exit 1");
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/didn't start: ward: its desktop failed to start/);
+  });
+
+  it("opens nothing where Ward has no private desktop to give, and says why", async () => {
+    const exec = await withWard("echo 'ward: no T3 thread is calling' >&2; exit 3");
+    expect(await exec.startPrivateDesktop()).toBe("no T3 thread is calling");
+    const { open } = await import("../src/open.ts");
+    await expect(open(["foot"], 1000)).rejects.toThrow(/No private desktop here \(no T3 thread is calling\)/);
+  });
+
+  it("refuses input on the live session without PUCK_INVASIVE, never on a private desktop", async () => {
+    vi.stubEnv("PUCK_INVASIVE", "");
+    const exec = await withWard(ward, { umbriel: `[ "$1" = focused-window ] && { echo 'no focused window' >&2; exit 1; }; echo '[]'` });
+    const { registerInvasive } = await import("../src/tools/invasive.ts");
+    const tools = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+    registerInvasive({ registerTool: (name: string, _config: unknown, handler: never) => tools.set(name, handler) } as never, { owned: new Set() });
+    const click = () => tools.get("click")!({ x: 1, y: 1, window_id: "none", button: "left", count: 1 });
+    await expect(exec.onDesktop(click)).rejects.toThrow(/Refused on the user's live session/);
+    exec.followPrivateDesktop(true);
+    // Past the refusal: it goes on to look for the window, on the private desktop, which has none.
+    await expect(exec.onDesktop(click)).rejects.toThrow(/No window with id none/);
   });
 
   it("refuses a layout snapshot taken on another desktop", async () => {
     const exec = await withWard(ward);
     const { restoreLayout } = await import("../src/layout.ts");
     const saved = { id: "abc", createdAt: "", scope: null, focused: null, workspaces: [], windows: [] };
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     const refused = /taken on another desktop/;
     await expect(exec.onDesktop(() => restoreLayout({ ...saved, desktop: "/run/other/desktop" }))).rejects.toThrow(refused);
     // One from before snapshots recorded their desktop was taken on the live session.
     await expect(exec.onDesktop(() => restoreLayout(saved))).rejects.toThrow(refused);
   });
 
-  it("ignores PUCK_OUTPUTS on a ward's desktop, whose output isn't one of the user's", async () => {
+  it("ignores PUCK_OUTPUTS on a private desktop, whose output isn't one of the user's", async () => {
     const exec = await withWard(ward);
     vi.stubEnv("PUCK_OUTPUTS", "DP-2");
     const { allowedOutputs } = await import("../src/scope.ts");
     expect(await exec.onDesktop(allowedOutputs)).toEqual(["DP-2"]);
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     expect(await exec.onDesktop(allowedOutputs)).toBeNull();
   });
 });

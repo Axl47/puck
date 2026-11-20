@@ -4,7 +4,7 @@ import { TEXT_MODES, inspect } from "../inspect.ts";
 import { onScreen } from "../pointer.ts";
 import { notifications, shellState } from "../noctalia.ts";
 import { type Snapshot, findOutput, findWindow, snapshot } from "../umbriel.ts";
-import { desktop, followWardDesktop, onDesktop } from "../exec.ts";
+import { desktop, followPrivateDesktop, onDesktop } from "../exec.ts";
 import { type Register, assertShell, json } from "./common.ts";
 
 /**
@@ -65,24 +65,24 @@ export const registerObserve: Register = (server, session) => {
     {
       title: "Desktop state",
       description:
-        "Which desktop Puck is on (`desktop`: a ward's private one, or the user's live session), its outputs (monitors), workspaces, and every window with its id, app, title, workspace, output and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers; null on a ward's desktop, which has no shell). on_screen is the part of a window on its output while its workspace is shown (null when hidden or scrolled away); flags such as floating and fullscreen appear only when true. Call this first; other tools take these ids.",
+        "Which desktop Puck is on (`desktop`: your private one, which the user never sees, or the user's live session), its outputs (monitors), workspaces, and every window with its id, app, title, workspace, output and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers; null on a private desktop, which has no shell). on_screen is the part of a window on its output while its workspace is shown (null when hidden or scrolled away); flags such as floating and fullscreen appear only when true. Call this first; other tools take these ids.",
       inputSchema: {
         desktop: z
-          .enum(["ward", "live"])
+          .enum(["private", "live"])
           .optional()
-          .describe("Move every Puck tool to this desktop until changed again. In a ward the default is its private desktop; pass live only when the user wants something on their own screen."),
+          .describe("Move every Puck tool to this desktop until changed again. The default is your private desktop once you have one (in a ward always; elsewhere from your first `puck open CMD` or launch_app); pass live only when the user wants something on their own screen."),
       },
       annotations: { readOnlyHint: true },
     },
     async ({ desktop: wanted }) => {
-      if (wanted) followWardDesktop(wanted === "ward");
+      if (wanted) followPrivateDesktop(wanted === "private");
       // Chosen here, after the switch, and not by the server as for other tools.
       return onDesktop(async () => {
         const on = desktop();
-        if (wanted === "ward" && on === "live") throw new Error("This folder has no ward, so the live session is the only desktop.");
+        if (wanted === "private" && on === "live") throw new Error("You have no private desktop yet. `puck open CMD` in a shell opens CMD on one, and Puck acts on it from then on. If you did that and still see this, this server can't tell which thread it serves: use the `puck` CLI in your shell instead.");
         const snap = await snapshot();
         // Best effort: the desktop view still works while Noctalia restarts.
-        const shell = on === "ward" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
+        const shell = on === "private" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
         return json({ desktop: on, ...describeDesktop(snap, session.owned), shell });
       });
     },
