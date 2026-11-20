@@ -70,7 +70,7 @@ export const registerObserve: Register = (server, session) => {
         desktop: z
           .enum(["private", "live"])
           .optional()
-          .describe("Move every Puck tool to this desktop until changed again. The default is your private desktop once you have one (in a ward always; elsewhere after `puck open -- CMD`); pass live only when the user wants something on their own screen."),
+          .describe("Move every Puck tool to this desktop until changed again. The default is your private desktop once you have one (in a ward always; elsewhere from your first `puck open CMD` or launch_app); pass live only when the user wants something on their own screen."),
       },
       annotations: { readOnlyHint: true },
     },
@@ -79,7 +79,7 @@ export const registerObserve: Register = (server, session) => {
       // Chosen here, after the switch, and not by the server as for other tools.
       return onDesktop(async () => {
         const on = desktop();
-        if (wanted === "private" && on === "live") throw new Error("You have no private desktop yet. `puck open -- CMD` in a shell opens CMD on one, and Puck acts on it from then on.");
+        if (wanted === "private" && on === "live") throw new Error("You have no private desktop yet. `puck open CMD` in a shell opens CMD on one, and Puck acts on it from then on. If you did that and still see this, this server can't tell which thread it serves: use the `puck` CLI in your shell instead.");
         const snap = await snapshot();
         // Best effort: the desktop view still works while Noctalia restarts.
         const shell = on === "private" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);

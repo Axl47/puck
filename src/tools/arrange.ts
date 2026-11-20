@@ -179,7 +179,7 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Launch app",
       description:
-        "Start an installed app by name or desktop id (e.g. 'Obsidian', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it). On the live session the window appears on the user's screen: to check something yourself, `puck open -- CMD` in a shell opens it on your private desktop instead.",
+        "Start an installed app by name or desktop id (e.g. 'Obsidian', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it). It opens on your private desktop, started if needed; only after desktop_state with desktop \"live\" does it open on the user's screen. For a command that isn't an installed app (a dev build, a URL in a browser), `puck open CMD` in a shell.",
       inputSchema: {
         app: z.string(),
         workspace: z.string().optional().describe("Workspace id to open on; switches that output to it"),

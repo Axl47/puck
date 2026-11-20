@@ -52,11 +52,32 @@ export function followPrivateDesktop(on: boolean): void {
   followPrivate = on;
 }
 
+/** False once the live session was chosen (desktop_state, PUCK_DESKTOP=live, the user's own terminal). */
+export const followsPrivateDesktop = () => followPrivate;
+
+/**
+ * Starts the agent's private desktop if it isn't up: Ward starts a thread's when
+ * a command runs on it. Returns null once it is up, or why there is none to
+ * start (no Ward, or neither a ward nor a T3 thread Ward can tell).
+ */
+export async function startPrivateDesktop(): Promise<string | null> {
+  try {
+    await promisify(execFile)("ward", ["desktop", "--", "true"], { timeout: 90_000 });
+    return null;
+  } catch (err) {
+    const { code, stderr } = err as { code?: string | number; stderr?: string };
+    if (code === "ENOENT") return "`ward` isn't on PATH";
+    if (code === 3) return stderr?.trim().replace(/^ward: /, "") || "this is neither a T3 thread nor a warded worktree";
+    throw new Error(`The private desktop didn't start: ${stderr?.trim() || (err instanceof Error ? err.message : String(err))}`);
+  }
+}
+
 /**
  * The environment of the agent's private desktop, from `ward desktop` (a few ms
  * once the desktop is up). In a ward that starts the ward and its desktop when
- * they aren't up; elsewhere it only answers once the thread opened something
- * (`puck open`, `ward desktop -- CMD`). null when there is none.
+ * they aren't up; elsewhere it answers from the thread's first open on
+ * (`puck open`, launch_app, `ward desktop -- CMD`), restarting a desktop that
+ * stopped meanwhile. null when there is none.
  */
 async function privateDesktop(): Promise<DesktopEnv | null> {
   try {

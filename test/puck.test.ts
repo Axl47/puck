@@ -10,7 +10,7 @@ import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { cleanForOcr, digitZeros, type Gray, parsePnm, toInk } from "../src/ocr.ts";
-import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt } from "../src/pointer.ts";
+import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs, overlayKeysRefusal } from "../src/keys.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
@@ -295,6 +295,12 @@ describe("onScreen", () => {
     expect(onScreen({ ...spotify, minimized: true }, snap.outputs)).toBeNull();
   });
 
+  it("counts a point from a window's corner, and refuses one that isn't showing there", () => {
+    expect(windowPoints(snap, spotify.id, [{ x: 10, y: 20 }])).toEqual([{ x: spotify.x + 10, y: spotify.y + 20 }]);
+    expect(() => windowPoints(snap, spotify.id, [{ x: spotify.w, y: 0 }])).toThrow(/outside window/);
+    expect(() => windowPoints(snap, t3.id, [{ x: 10, y: 20 }])).toThrow(/isn't showing/);
+  });
+
   it("is in the desktop view with whether the workspace is shown", () => {
     const view = describeDesktop(snap, new Set());
     expect(view.windows.find((w) => w.id === t3.id)).toMatchObject({ output: "DP-2", workspace_active: false, on_screen: null });
@@ -495,10 +501,23 @@ describe("which desktop", () => {
     await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/didn't start: ward: its desktop failed to start/);
   });
 
-  it("opens nothing where Ward has no private desktop to give", async () => {
-    await withWard("exit 3");
+  it("opens nothing where Ward has no private desktop to give, and says why", async () => {
+    const exec = await withWard("echo 'ward: no T3 thread is calling' >&2; exit 3");
+    expect(await exec.startPrivateDesktop()).toBe("no T3 thread is calling");
     const { open } = await import("../src/open.ts");
-    await expect(open(["foot"], 1000)).rejects.toThrow(/No private desktop here/);
+    await expect(open(["foot"], 1000)).rejects.toThrow(/No private desktop here \(no T3 thread is calling\)/);
+  });
+
+  it("refuses input on the live session without PUCK_INVASIVE, never on a private desktop", async () => {
+    const exec = await withWard(ward);
+    const { registerInvasive } = await import("../src/tools/invasive.ts");
+    const tools = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+    registerInvasive({ registerTool: (name: string, _config: unknown, handler: never) => tools.set(name, handler) } as never, { owned: new Set() });
+    const click = () => tools.get("click")!({ x: 1, y: 1, window_id: "none", button: "left", count: 1 });
+    await expect(exec.onDesktop(click)).rejects.toThrow(/Refused on the user's live session/);
+    exec.followPrivateDesktop(true);
+    // Past the refusal: it goes on to look for the window, on the private desktop.
+    await expect(exec.onDesktop(click)).rejects.not.toThrow(/Refused/);
   });
 
   it("refuses a layout snapshot taken on another desktop", async () => {

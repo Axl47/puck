@@ -107,7 +107,9 @@ restarts under it.
   can't be missing); both of those are the live session. In a warded worktree
   Ward starts the ward and its desktop for that call. In any other T3 thread the
   desktop is the thread's own, and Ward only answers once the thread has opened
-  something on it, so a thread working on the user's real desktop stays there. Any other failure is reported to the agent, not papered over with
+  something on it, so a thread working on the user's real desktop stays there;
+  from that first open on it always answers, starting the desktop again if it
+  stopped, so a thread never drops back to the user's screen halfway. Any other failure is reported to the agent, not papered over with
   the live session: that would put its windows on the user's screen. The MCP
   server always asks (it is one process outside the ward for the whole thread,
   so nothing could prefix its calls); the CLI asks when an agent runs it
@@ -117,19 +119,46 @@ restarts under it.
 - **Otherwise the live session,** or whatever the environment names: the CLI
   in the user's own terminal is an ordinary Wayland program, so `ward desktop -- puck state`
   from the host reads that ward's desktop.
-- **`puck open -- CMD` puts something there.** Goal (2026-11-19): one standard
-  command to open an app or window for a check, which the user never sees and
+- **`puck open CMD` puts something there.** Goal (2026-11-19): one standard
+  command to open an app or window for a check, which the user doesn't see and
   which leaves the agent nothing to work out: no desktop to pick, no window id
   to find first. It runs `ward desktop -- true`, which starts the private
   desktop where a ward or a T3 thread can have one (exit 3: neither, and it
-  refuses), then `ward desktop -- CMD` detached with its output in a log file,
-  and polls for a window that wasn't there before. It prints that window (id,
-  app, title, geometry), the command's pid and the log; a command that fails
-  first is reported with the end of its output, and one that outlasts the wait
-  (15 s, `--wait`) is left running. It is CLI-only on purpose: every agent has a
-  shell, the command's output and lifetime are a shell's business, and the MCP
-  tools then act on the same desktop. `launch_app` stays for installed apps on
-  whichever desktop Puck is on.
+  refuses with Ward's reason), then `ward desktop -- CMD` detached with its
+  output in a log file under the desktop's own temp folder, and polls for the
+  command's window. It prints that window (id, app, title, geometry), the
+  command's pid and the log; a command that fails first is reported with the
+  end of its output, and one that outlasts the wait (15 s, `--wait`) is left
+  running. It is a CLI command because every agent has a shell, the command's
+  output and lifetime are a shell's business, and only a shell is sure to know
+  its thread; the MCP tools then act on the same desktop.
+- **Whose window.** The command is started detached, so it leads a session of
+  its own and everything it starts stays in that session; a new window counts
+  when its process is in it (`/proc/<pid>/stat`). So two opens at once each
+  return their own window (v1 took the first new one, and a live test caught
+  both returning the same). A launcher that hands off and exits has no window
+  of its own: once it has ended well, or the wait is over, any new window is
+  returned with a note saying so, else the windows that are there. Walking
+  parent pids instead would lose a window whose launcher exited.
+- **Nothing opens on the user's screen unasked.** The live session stays the
+  default for looking, because some threads work on the real desktop on
+  purpose, but an agent that reaches for `launch_app` to test something would
+  put a window in front of the user. So `launch_app` first starts the private
+  desktop, like `puck open`, unless the agent chose the live session
+  (`desktop_state` with `desktop: "live"`), and refuses where there is none to
+  start. Decided against: making every T3 thread private from its first call.
+  It would close the same hole with one condition in Ward, but takes the live
+  session away from threads whose job is the user's desktop unless each asks
+  for it; that is the user's call, and it stays a one-line change.
+- **A server that can't tell its thread.** Ward finds a thread's desktop by
+  `T3CODE_THREAD_ID`. Claude's MCP servers have it; Codex runs one process for
+  several threads and gives its MCP servers neither that nor a per-thread
+  process to trace (measured 2026-11-19), so there the server stays on the
+  live session while the thread's shell, which has the id, drives the private
+  desktop through the CLI. The server says so in its instructions and in the
+  refusals below, rather than guessing a desktop from the folder: several
+  threads share a folder, and a wrong guess acts on another thread's windows.
+  The fix belongs in T3: pass the thread id to the MCP servers it starts.
 
 `desktop_state` reports which one (`desktop: "private" | "live"`) and takes the
 same field to move the session, for when the user wants something on their own
@@ -161,14 +190,18 @@ with a shell can run `umbriel msg` or `wtype` itself.
 |---|---|---|
 | **Observe** | yes | `desktop_state`, `screenshot`, `notifications`, `inspect` |
 | **Arrange** | yes | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` |
-| **Invasive** | no | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` |
+| **Invasive** | on a private desktop | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` |
 
 Arrange actions never destroy state; layout changes undo with a snapshot, and
-`shell_settings` returns the values it replaced. Invasive tools are
-registered only when `PUCK_INVASIVE=1` is in the server's env, and even then
+`shell_settings` returns the values it replaced. On the live session invasive
+tools refuse unless `PUCK_INVASIVE=1` is in the server's env, and even then
 `close_window`/`kill_window` refuse windows Puck didn't launch in that
 session unless the call passes `owned_only: false`. So an agent can clean up
-what it opened but can't close my Zed by accident.
+what it opened but can't close my Zed by accident. On a private desktop
+everything is the agent's own, so they work with no setting and no ownership
+check: an agent that opened something for a check can click and type in it
+with the tools it already has. (They used to be registered only with the
+setting, which left an agent on its own desktop able to look but not act.)
 
 - `launch_app` claims only a new window whose `app_id` matches the app, never
   whatever else appears meanwhile.
@@ -194,7 +227,11 @@ what it opened but can't close my Zed by accident.
 Pointer input is synthetic input like typing, so it sits in the invasive
 tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
 need no `PUCK_INVASIVE` (a script asks for them explicitly) but honour
-`PUCK_OUTPUTS`.
+`PUCK_OUTPUTS`. Points are global, or with a window (`window_id`, `--window`)
+counted from its top-left corner, which is what an agent reading a screenshot
+of the window has; such a point is refused when it isn't showing there
+(scrolled away, covered, another workspace), since the click would land on
+something else.
 
 ### Pointer
 
