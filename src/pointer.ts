@@ -267,19 +267,24 @@ export async function pointerInput(
       }
       home = start;
       await pointerAct([moveOp(outs, target)]);
-      // Once more, late: a window that opens meanwhile shifts the others. A refusal here
-      // takes the usual way out, which puts the pointer back. What moves between this
-      // and the press isn't caught.
-      await opts.still?.();
+      // Once more, late: a window that opens meanwhile shifts the others. Its refusal waits
+      // for the pointer check, then takes the usual way out, which puts the pointer back.
+      // What moves between this and the press isn't caught.
+      const moved = await opts.still?.().then(
+        () => undefined,
+        (err: unknown) => err,
+      );
       // Last, so nothing comes between it and the press: the user's mouse.
       const landed = await probePointer(outs);
       if (landed.x !== target.x || landed.y !== target.y) {
         home = undefined; // leave the mouse to the user
         focus.abandon();
-        throw new Error(
-          `The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`,
+        throw (
+          moved ??
+          new Error(`The pointer ended at ${landed.x},${landed.y}, not ${target.x},${target.y}; the user may be using the mouse. Nothing was pressed.`)
         );
       }
+      if (moved) throw moved;
       await pointerAct(ops);
       if (opts.overlay && !(await overlayClosed(opts.overlay))) focus.leave(); // it still has the keyboard
       await focus.settle(); // a click focuses what it hit; withFocus then hands focus back
