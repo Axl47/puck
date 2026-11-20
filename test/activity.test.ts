@@ -43,7 +43,7 @@ describe("sanitizeArgs", () => {
       typed: 3,
     });
     // A shifted character gives away a capital or a symbol, and a word may be the password itself.
-    expect(sanitizeArgs("press_keys", { keys: ["shift+h", "shift+1", "hunter2", "super+shift+q", "F5"] })).toEqual({ keys: ["super+shift+q", "F5"], typed: 3 });
+    expect(sanitizeArgs("press_keys", { keys: ["shift+h", "shift+1", "hunter2", "ctrl+appleorange", "super+shift+q", "F5"] })).toEqual({ keys: ["super+shift+q", "F5"], typed: 4 });
   });
 
   it("cuts long strings and arrays at any depth and drops what isn't JSON", () => {
