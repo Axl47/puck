@@ -37,7 +37,7 @@ export type WorkspaceRef = z.infer<typeof WorkspaceRefSchema>;
 const LayoutSnapshotSchema = z.object({
   id: z.string(),
   createdAt: z.string(),
-  /** The runtime folder of the desktop it was taken on; snapshots from before ward desktops have none. */
+  /** The runtime folder of the desktop it was taken on; snapshots from before private desktops have none. */
   desktop: z.string().optional(),
   /** Outputs recorded; null for all. */
   scope: z.array(z.string()).nullable(),
@@ -182,7 +182,7 @@ export function loadLayout(id: string): LayoutSnapshot {
  */
 export function restoreLayout(saved: LayoutSnapshot) {
   // Wards' desktops share output and workspace names, so a snapshot would apply to any of them.
-  if (saved.desktop ? saved.desktop !== desktopEnv().XDG_RUNTIME_DIR : desktop() === "ward") {
+  if (saved.desktop ? saved.desktop !== desktopEnv().XDG_RUNTIME_DIR : desktop() === "private") {
     throw new Error(`Snapshot ${saved.id} was taken on another desktop.`);
   }
   const allowed = allowedOutputs();

@@ -451,13 +451,13 @@ describe("which desktop", () => {
 
   const ward = "printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'";
 
-  it("follows the ward's desktop only when told to, and takes its whole environment", async () => {
+  it("follows the private desktop only when told to, and takes its whole environment", async () => {
     vi.stubEnv("AT_SPI_BUS_ADDRESS", "unix:path=/run/live/at-spi");
     const exec = await withWard(ward);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
-    exec.followWardDesktop(true);
-    expect(await exec.onDesktop(exec.desktop)).toBe("ward");
+    exec.followPrivateDesktop(true);
+    expect(await exec.onDesktop(exec.desktop)).toBe("private");
     expect(await exec.onDesktop(exec.desktopEnv)).toMatchObject({
       XDG_RUNTIME_DIR: "/run/w/desktop",
       WAYLAND_DISPLAY: "wayland-0",
@@ -469,49 +469,55 @@ describe("which desktop", () => {
 
   it("keeps a call on the desktop it started on when another call switches", async () => {
     const exec = await withWard(ward);
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     let switched = () => {};
     const waiting = new Promise<void>((resolve) => (switched = resolve));
     const call = exec.onDesktop(async () => {
       await waiting;
       return [exec.desktop(), exec.desktopEnv().WAYLAND_DISPLAY];
     });
-    exec.followWardDesktop(false);
+    exec.followPrivateDesktop(false);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     switched();
-    expect(await call).toEqual(["ward", "wayland-0"]);
+    expect(await call).toEqual(["private", "wayland-0"]);
   });
 
-  it("is the live session where Ward says the folder has no ward", async () => {
+  it("is the live session where Ward says there is no private desktop", async () => {
     const exec = await withWard("exit 3");
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     expect(await exec.onDesktop(exec.desktop)).toBe("live");
     expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
   });
 
-  it("reports a ward desktop that didn't start instead of falling back to the live session", async () => {
+  it("reports a private desktop that didn't start instead of falling back to the live session", async () => {
     const exec = await withWard("echo 'ward: its desktop failed to start' >&2; exit 1");
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/didn't start: ward: its desktop failed to start/);
+  });
+
+  it("opens nothing where Ward has no private desktop to give", async () => {
+    await withWard("exit 3");
+    const { open } = await import("../src/open.ts");
+    await expect(open(["foot"], 1000)).rejects.toThrow(/No private desktop here/);
   });
 
   it("refuses a layout snapshot taken on another desktop", async () => {
     const exec = await withWard(ward);
     const { restoreLayout } = await import("../src/layout.ts");
     const saved = { id: "abc", createdAt: "", scope: null, focused: null, workspaces: [], windows: [] };
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     const refused = /taken on another desktop/;
     await expect(exec.onDesktop(() => restoreLayout({ ...saved, desktop: "/run/other/desktop" }))).rejects.toThrow(refused);
     // One from before snapshots recorded their desktop was taken on the live session.
     await expect(exec.onDesktop(() => restoreLayout(saved))).rejects.toThrow(refused);
   });
 
-  it("ignores PUCK_OUTPUTS on a ward's desktop, whose output isn't one of the user's", async () => {
+  it("ignores PUCK_OUTPUTS on a private desktop, whose output isn't one of the user's", async () => {
     const exec = await withWard(ward);
     vi.stubEnv("PUCK_OUTPUTS", "DP-2");
     const { allowedOutputs } = await import("../src/scope.ts");
     expect(await exec.onDesktop(allowedOutputs)).toEqual(["DP-2"]);
-    exec.followWardDesktop(true);
+    exec.followPrivateDesktop(true);
     expect(await exec.onDesktop(allowedOutputs)).toBeNull();
   });
 });

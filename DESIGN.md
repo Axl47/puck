@@ -1,7 +1,7 @@
 # Puck design
 
 Puck lets agents see and drive a desktop on gaia-arch: the real one, or the
-private one of the agent's ward. It also shows live agent status on the real
+agent's own private one. It also shows live agent status on the real
 desktop. It has two parts that share one repo:
 
 1. **`puck` MCP server** (TypeScript, stdio). Wraps Umbriel's IPC, Noctalia's
@@ -100,35 +100,50 @@ all find their sockets through those, and so does Puck's own lock (below).
 desktop and finish on another when a second call switches, or when the ward
 restarts under it.
 
-- **For an agent in a ward, the ward's desktop.** Puck runs `ward desktop` in
-  its own folder: exit 0 prints the ward desktop's environment (starting the
-  ward and the desktop when they aren't up; a shell script reading two files,
-  about 10 ms, once they are), exit 3 means the folder has no ward, and a
-  missing `ward` means the machine has none (an error inside a ward, where it
-  can't be missing); both of those are the live session. Any other failure is reported to the agent, not papered over with
+- **For an agent with a private desktop, that desktop.** Puck runs `ward desktop` in
+  its own folder: exit 0 prints the private desktop's environment (a shell script
+  reading two files, about 10 ms), exit 3 means there is none, and a
+  missing `ward` means the machine has no Ward (an error inside a ward, where it
+  can't be missing); both of those are the live session. In a warded worktree
+  Ward starts the ward and its desktop for that call. In any other T3 thread the
+  desktop is the thread's own, and Ward only answers once the thread has opened
+  something on it, so a thread working on the user's real desktop stays there. Any other failure is reported to the agent, not papered over with
   the live session: that would put its windows on the user's screen. The MCP
   server always asks (it is one process outside the ward for the whole thread,
-  so nothing could prefix its calls); the CLI asks when it runs inside a ward
-  (`WARD_ID` is set), where an agent's shell still has the live session's
-  environment and a bare `puck pointer click` would otherwise land on the
+  so nothing could prefix its calls); the CLI asks when an agent runs it
+  (`WARD_ID` or `T3CODE_THREAD_ID` is set), whose shell still has the live session's
+  environment, so a bare `puck pointer click` would otherwise land on the
   user's screen.
 - **Otherwise the live session,** or whatever the environment names: the CLI
-  outside a ward is an ordinary Wayland program, so `ward desktop -- puck state`
+  in the user's own terminal is an ordinary Wayland program, so `ward desktop -- puck state`
   from the host reads that ward's desktop.
+- **`puck open -- CMD` puts something there.** Goal (2026-11-19): one standard
+  command to open an app or window for a check, which the user never sees and
+  which leaves the agent nothing to work out: no desktop to pick, no window id
+  to find first. It runs `ward desktop -- true`, which starts the private
+  desktop where a ward or a T3 thread can have one (exit 3: neither, and it
+  refuses), then `ward desktop -- CMD` detached with its output in a log file,
+  and polls for a window that wasn't there before. It prints that window (id,
+  app, title, geometry), the command's pid and the log; a command that fails
+  first is reported with the end of its output, and one that outlasts the wait
+  (15 s, `--wait`) is left running. It is CLI-only on purpose: every agent has a
+  shell, the command's output and lifetime are a shell's business, and the MCP
+  tools then act on the same desktop. `launch_app` stays for installed apps on
+  whichever desktop Puck is on.
 
-`desktop_state` reports which one (`desktop: "ward" | "live"`) and takes the
+`desktop_state` reports which one (`desktop: "private" | "live"`) and takes the
 same field to move the session, for when the user wants something on their own
-screen; `PUCK_DESKTOP=live` does the same for one CLI command in a ward. The
+screen; `PUCK_DESKTOP=live` does the same for one CLI command. The
 switch applies to calls that start after it, and it is per MCP server, so
 subagents sharing the server share it; `desktop_state` itself picks after
-switching, so `desktop: "live"` still works when the ward's desktop won't start.
-`PUCK_OUTPUTS` names the user's monitors, so it limits nothing on a ward's
+switching, so `desktop: "live"` still works when the private desktop won't start.
+`PUCK_OUTPUTS` names the user's monitors, so it limits nothing on a private
 desktop. A layout snapshot records the desktop it was taken on (its
-`XDG_RUNTIME_DIR`) and restores only there: every ward's desktop has the same
+`XDG_RUNTIME_DIR`) and restores only there: every private desktop has the same
 output and workspace names, so one would otherwise apply anywhere. `puck spend`
 and `puck help` touch no desktop and start none.
 
-A ward's desktop has no Noctalia: `desktop_state` gives `shell: null`, and
+A private desktop has no Noctalia: `desktop_state` gives `shell: null`, and
 `notifications`, `dismiss_notification` and `shell_settings` refuse there
 instead of reading or changing the user's shell. `launch_app` needs nothing
 special: Umbriel starts the program, and the ward's Umbriel runs inside the

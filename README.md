@@ -2,7 +2,7 @@
 
 # Puck
 
-Lets agents see and drive a desktop on gaia-arch: the real one (Umbriel + Noctalia), or the private headless one of the agent's [ward](https://github.com/Axl47/ward). Also shows live T3 agent status in the Noctalia bar. See [DESIGN.md](DESIGN.md).
+Lets agents see and drive a desktop on gaia-arch: the real one (Umbriel + Noctalia), or the agent's own private headless one, from [Ward](https://github.com/Axl47/ward). Also shows live T3 agent status in the Noctalia bar. See [DESIGN.md](DESIGN.md).
 
 ## Setup
 
@@ -36,19 +36,27 @@ Apps without a tree (foot, most games, images) get OCR instead.
 
 ## Which desktop
 
-For an agent in a warded T3 worktree, Puck acts on that ward's private desktop, starting it on first use; everywhere else, on the live session. It asks `ward desktop` each time, and if that fails it says so rather than falling back to your screen.
+An agent has a private desktop from [Ward](https://github.com/Axl47/ward), which you never see: its ward's, or in a T3 thread without a ward, one of the thread's own.
 
-- **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"ward"` moves it back).
-- **CLI:** `puck state` says which. Inside a ward it is the ward's desktop; `PUCK_DESKTOP=live puck …` acts on your screen. Outside a ward it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
+```sh
+puck open -- pnpm dev        # or a built app, or `helium http://localhost:5173`
+```
 
-A ward's desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply. A layout snapshot restores only on the desktop it was taken on.
+`puck open -- CMD` is the one way to open something for a check. It starts the private desktop if needed, runs `CMD` on it detached, waits for the new window (15 s, or `--wait SECONDS`) and prints its id, app, title and geometry, with the command's pid and the file its output goes to. It never opens anything on your screen.
+
+Puck acts on the private desktop once the agent has one: in a warded worktree from the first call, in another thread from its first `puck open`. Until then, and outside T3, it acts on the live session. It asks `ward desktop` each time, and if that fails it says so rather than falling back to your screen.
+
+- **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"private"` moves it back).
+- **CLI:** `puck state` says which. For an agent (in a ward or a T3 thread) it is the private desktop when there is one; `PUCK_DESKTOP=live puck …` acts on your screen. In your own terminal it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
+
+A private desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply. A layout snapshot restores only on the desktop it was taken on.
 
 ## Tools
 
 | Tier | MCP tools | CLI |
 |---|---|---|
 | Observe | `desktop_state`, `screenshot`, `notifications`, `inspect` | `puck state`, `puck inspect …`, `puck pointer` |
-| Arrange | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` | `puck snapshot`, `puck restore` |
+| Arrange | `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `launch_app`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` | `puck open -- CMD`, `puck snapshot`, `puck restore` |
 | Invasive (`PUCK_INVASIVE=1`) | `close_window`, `kill_window`, `type_text`, `press_keys`, `pointer_move`, `click`, `drag`, `scroll` | `puck pointer move\|click\|drag\|scroll`, `puck keys` |
 
 ```sh

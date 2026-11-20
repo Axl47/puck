@@ -4,7 +4,8 @@ import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, par
 import { pressKeys } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, movePointer, pointerInput } from "./pointer.ts";
-import { desktop, followWardDesktop, onDesktop } from "./exec.ts";
+import { desktop, followPrivateDesktop, onDesktop } from "./exec.ts";
+import { open } from "./open.ts";
 import { serveStdio } from "./server.ts";
 import { spendToday } from "./t3.ts";
 import { describeDesktop } from "./tools/observe.ts";
@@ -13,6 +14,10 @@ import { snapshot } from "./umbriel.ts";
 const usage = `Usage: puck <command>
 
   mcp              Run the MCP server on stdio (PUCK_INVASIVE=1 adds close, kill and typing)
+  open [--wait SECONDS] -- CMD…
+                   Run CMD on your private desktop, which the user never sees (your ward's,
+                   or your T3 thread's own, started if needed), and print the window it opens
+                   (waits 15 s unless told otherwise). CMD keeps running; its output goes to the file printed as log
   state            Print the desktop as agents see it
   snapshot [out…]  Save the layout of the given outputs (all when none) and print its id
   restore <id>     Put a saved layout back
@@ -32,7 +37,8 @@ const usage = `Usage: puck <command>
 Input is refused while a shell surface has the keyboard; --overlay NS sends it into
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
 Coordinates are global logical pixels. PUCK_OUTPUTS limits input to those outputs.
-In a ward, commands act on its private desktop; PUCK_DESKTOP=live acts on the live session.`;
+An agent's commands act on its private desktop once it has one: in a ward always, in
+another T3 thread after its first \`puck open\`. PUCK_DESKTOP=live acts on the live session.`;
 
 const [command = "mcp", ...args] = process.argv.slice(2);
 const arg = args[0];
@@ -41,12 +47,14 @@ const print = (value: unknown) => console.log(JSON.stringify(value, null, 2));
 try {
   if (command === "mcp") await serveStdio();
   else if (command === "spend") console.log(JSON.stringify(await spendToday()));
+  else if (command === "open") print(await openCommand(args));
   else if (!["state", "snapshot", "restore", "inspect", "pointer", "keys"].includes(command)) {
     console.error(usage);
     process.exit(command === "help" || command === "--help" ? 0 : 2);
   } else {
-    // In a ward, its desktop: an agent's shell there has the live session's environment.
-    followWardDesktop(Boolean(process.env.WARD_ID) && process.env.PUCK_DESKTOP !== "live");
+    // An agent's private desktop, if it has one: its shell has the live session's
+    // environment. Not for the user's own terminal, which is neither in a ward nor a T3 thread.
+    followPrivateDesktop(Boolean(process.env.WARD_ID || process.env.T3CODE_THREAD_ID) && process.env.PUCK_DESKTOP !== "live");
     await onDesktop(runCommand);
   }
 } catch (err) {
@@ -77,6 +85,15 @@ async function runCommand(): Promise<void> {
       print(await keysCommand(args));
       break;
   }
+}
+
+function openCommand(argv: string[]) {
+  // Everything after `--` is the command, its own flags included.
+  const at = argv.indexOf("--");
+  const { values } = parseArgs({ args: at < 0 ? argv : argv.slice(0, at), options: { wait: { type: "string", default: "15" } } });
+  const seconds = Number(values.wait);
+  if (!(seconds > 0)) throw new Error("--wait takes a number of seconds");
+  return open(at < 0 ? [] : argv.slice(at + 1), seconds * 1000);
 }
 
 function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], flag: string): T | undefined {
