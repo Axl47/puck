@@ -64,7 +64,11 @@ const COMMAND_MODIFIER = /^(?:ctrl|control|alt|super|meta|logo|mod\d?|win|cmd)$/
  */
 const isNamedKey = (key: string) => {
   const parts = key.split("+");
-  return parts.length > 1 ? parts.slice(0, -1).some((m) => COMMAND_MODIFIER.test(m)) : NAMED_KEY.test(key);
+  const last = parts.at(-1) ?? "";
+  const mods = parts.slice(0, -1);
+  if (!mods.length) return NAMED_KEY.test(key);
+  // Every modifier a real one, at least one a command modifier, and the key itself one character or a named key.
+  return mods.every((m) => COMMAND_MODIFIER.test(m) || /^shift$/i.test(m)) && mods.some((m) => COMMAND_MODIFIER.test(m)) && ([...last].length === 1 || NAMED_KEY.test(last));
 };
 
 /** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments). */
