@@ -244,9 +244,11 @@ counted from its top-left corner, which on a private desktop (scale 1) is
 what an agent reading a screenshot of the window has; such a point is refused
 when it isn't showing there (scrolled away, covered, another workspace), since
 the click would land on something else, and checked again under the desktop
-lock, the last time right before the press, since another call or a window
-that opens meanwhile shifts the others. What moves in the last instant (the
-helper's start, some tens of ms) isn't caught: a live test that opened a
+lock, the last time after the pointer has moved there, since another call or
+a window that opens meanwhile shifts the others. Only the check that the
+pointer is where Puck put it comes later, because the user's mouse matters
+more. What moves in the last instant (two helper starts, around 0.1 s) isn't
+caught: a live test that opened a
 terminal 40–70 ms into a click saw the click land on the terminal. `puck
 focus ID` (`focus_window`) brings a scrolled-away window back first.
 
