@@ -47,8 +47,8 @@ describe("sanitizeArgs", () => {
   });
 
   it("cuts long strings and arrays at any depth and drops what isn't JSON", () => {
-    const out = sanitizeArgs("inspect", { deep: { s: "x".repeat(500), list: Array.from({ length: 80 }, (_, i) => i), f: () => 1, n: 10n } });
-    expect(out).toEqual({ deep: { s: "x".repeat(300), list: Array.from({ length: 50 }, (_, i) => i) } });
+    const out = sanitizeArgs("inspect", { deep: { s: `${"x ".repeat(160)}sk-live-tail`, list: Array.from({ length: 80 }, (_, i) => i), f: () => 1, n: 10n } });
+    expect(out).toEqual({ deep: { s: `${"x ".repeat(150)}…`, list: Array.from({ length: 50 }, (_, i) => i) } });
   });
 });
 
