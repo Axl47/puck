@@ -27,7 +27,7 @@ import {
   workspaceArgs,
   workspaces,
 } from "../umbriel.ts";
-import { type Register, allowedOutputs, assertOutputs, assertUnrestricted, json } from "./common.ts";
+import { type Register, allowedOutputs, assertOutputs, assertShell, assertUnrestricted, json } from "./common.ts";
 
 const reversible = { readOnlyHint: false, destructiveHint: false } as const;
 /** Changes nothing can undo exactly (a dismissed notification, a replaced setting). */
@@ -179,7 +179,7 @@ export const registerArrange: Register = (server, session) => {
     {
       title: "Launch app",
       description:
-        "Start an installed app by name or desktop id (e.g. 'Zed', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it).",
+        "Start an installed app by name or desktop id (e.g. 'Obsidian', 'helium') and wait for its window. Opens on `workspace` or `output` when given, else the focused output. Apps with their own window rules may open elsewhere. Returns the new window; focus stays with the user (use focus_window if the task needs it).",
       inputSchema: {
         app: z.string(),
         workspace: z.string().optional().describe("Workspace id to open on; switches that output to it"),
@@ -301,6 +301,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: lasting,
     },
     async ({ id, all }) => {
+      assertShell("Notifications");
       assertUnrestricted("Dismissing notifications");
       if (all) await clearActiveNotifications();
       else if (id !== undefined) await dismissNotification(id);
@@ -323,6 +324,7 @@ export const registerArrange: Register = (server, session) => {
       annotations: lasting,
     },
     async ({ wallpaper, theme_mode, do_not_disturb }) => {
+      assertShell("Shell settings");
       assertUnrestricted("Changing shell settings");
       if (wallpaper && !(isAbsolute(wallpaper.path) && statSync(wallpaper.path, { throwIfNoEntry: false })?.isFile())) {
         throw new Error(`No image file at ${wallpaper.path} (the path must be absolute).`);

@@ -4,7 +4,8 @@ import { TEXT_MODES, inspect } from "../inspect.ts";
 import { onScreen } from "../pointer.ts";
 import { notifications, shellState } from "../noctalia.ts";
 import { type Snapshot, findOutput, findWindow, snapshot } from "../umbriel.ts";
-import { type Register, json } from "./common.ts";
+import { desktop, followWardDesktop, onDesktop } from "../exec.ts";
+import { type Register, assertShell, json } from "./common.ts";
 
 /**
  * The compact desktop view agents get: flags appear only when true. A window's
@@ -64,14 +65,26 @@ export const registerObserve: Register = (server, session) => {
     {
       title: "Desktop state",
       description:
-        "Outputs (monitors), workspaces, and every window with its id, app, title, workspace, output and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers). on_screen is the part of a window on its output while its workspace is shown (null when hidden or scrolled away); flags such as floating and fullscreen appear only when true. Call this first; other tools take these ids.",
+        "Which desktop Puck is on (`desktop`: a ward's private one, or the user's live session), its outputs (monitors), workspaces, and every window with its id, app, title, workspace, output and geometry in logical pixels, plus shell settings (theme, do-not-disturb, wallpapers; null on a ward's desktop, which has no shell). on_screen is the part of a window on its output while its workspace is shown (null when hidden or scrolled away); flags such as floating and fullscreen appear only when true. Call this first; other tools take these ids.",
+      inputSchema: {
+        desktop: z
+          .enum(["ward", "live"])
+          .optional()
+          .describe("Move every Puck tool to this desktop until changed again. In a ward the default is its private desktop; pass live only when the user wants something on their own screen."),
+      },
       annotations: { readOnlyHint: true },
     },
-    async () => {
-      const snap = await snapshot();
-      // Best effort: the desktop view still works while Noctalia restarts.
-      const shell = await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
-      return json({ ...describeDesktop(snap, session.owned), shell });
+    async ({ desktop: wanted }) => {
+      if (wanted) followWardDesktop(wanted === "ward");
+      // Chosen here, after the switch, and not by the server as for other tools.
+      return onDesktop(async () => {
+        const on = desktop();
+        if (wanted === "ward" && on === "live") throw new Error("This folder has no ward, so the live session is the only desktop.");
+        const snap = await snapshot();
+        // Best effort: the desktop view still works while Noctalia restarts.
+        const shell = on === "ward" ? null : await shellState(snap.outputs.filter((o) => o.enabled).map((o) => o.name)).catch(() => null);
+        return json({ desktop: on, ...describeDesktop(snap, session.owned), shell });
+      });
     },
   );
 
@@ -133,6 +146,7 @@ export const registerObserve: Register = (server, session) => {
       annotations: { readOnlyHint: true },
     },
     async ({ limit, active_only }) => {
+      assertShell("Notifications");
       const all = await notifications();
       return json((active_only ? all.filter((n) => n.active) : all).slice(0, limit));
     },

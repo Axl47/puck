@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { commandLine, parseDesktopEntry, resolveApp, windowHints } from "../src/apps.ts";
 import { pickWorkspace } from "../src/arrange.ts";
@@ -431,5 +433,85 @@ describe("accessibility coordinates", () => {
   it("keeps a document that reports logical pixels (Firefox) as is", () => {
     expect(py(`a11y.document_scale(1418, 1418, 1.6)`)).toBe(1);
     expect(py(`a11y.document_scale(1380, 1418, 1.6)`)).toBe(1);
+  });
+});
+
+describe("which desktop", () => {
+  /** A fresh exec.ts whose `ward` is a script with this body. */
+  async function withWard(body: string) {
+    const bin = mkdtempSync(join(tmpdir(), "puck-ward-"));
+    writeFileSync(join(bin, "ward"), `#!/bin/sh\n${body}\n`);
+    chmodSync(join(bin, "ward"), 0o755);
+    vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
+    vi.stubEnv("WAYLAND_DISPLAY", "wayland-live");
+    vi.resetModules();
+    return import("../src/exec.ts");
+  }
+  afterEach(() => vi.unstubAllEnvs());
+
+  const ward = "printf 'XDG_RUNTIME_DIR=/run/w/desktop\\nWAYLAND_DISPLAY=wayland-0\\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/w/desktop/bus,guid=1\\nDISPLAY=\\n'";
+
+  it("follows the ward's desktop only when told to, and takes its whole environment", async () => {
+    vi.stubEnv("AT_SPI_BUS_ADDRESS", "unix:path=/run/live/at-spi");
+    const exec = await withWard(ward);
+    expect(await exec.onDesktop(exec.desktop)).toBe("live");
+    expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
+    exec.followWardDesktop(true);
+    expect(await exec.onDesktop(exec.desktop)).toBe("ward");
+    expect(await exec.onDesktop(exec.desktopEnv)).toMatchObject({
+      XDG_RUNTIME_DIR: "/run/w/desktop",
+      WAYLAND_DISPLAY: "wayland-0",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/w/desktop/bus,guid=1",
+      DISPLAY: "",
+    });
+    expect(await exec.onDesktop(exec.desktopEnv)).not.toHaveProperty("AT_SPI_BUS_ADDRESS");
+  });
+
+  it("keeps a call on the desktop it started on when another call switches", async () => {
+    const exec = await withWard(ward);
+    exec.followWardDesktop(true);
+    let switched = () => {};
+    const waiting = new Promise<void>((resolve) => (switched = resolve));
+    const call = exec.onDesktop(async () => {
+      await waiting;
+      return [exec.desktop(), exec.desktopEnv().WAYLAND_DISPLAY];
+    });
+    exec.followWardDesktop(false);
+    expect(await exec.onDesktop(exec.desktop)).toBe("live");
+    switched();
+    expect(await call).toEqual(["ward", "wayland-0"]);
+  });
+
+  it("is the live session where Ward says the folder has no ward", async () => {
+    const exec = await withWard("exit 3");
+    exec.followWardDesktop(true);
+    expect(await exec.onDesktop(exec.desktop)).toBe("live");
+    expect((await exec.onDesktop(exec.desktopEnv)).WAYLAND_DISPLAY).toBe("wayland-live");
+  });
+
+  it("reports a ward desktop that didn't start instead of falling back to the live session", async () => {
+    const exec = await withWard("echo 'ward: its desktop failed to start' >&2; exit 1");
+    exec.followWardDesktop(true);
+    await expect(exec.onDesktop(exec.desktop)).rejects.toThrow(/didn't start: ward: its desktop failed to start/);
+  });
+
+  it("refuses a layout snapshot taken on another desktop", async () => {
+    const exec = await withWard(ward);
+    const { restoreLayout } = await import("../src/layout.ts");
+    const saved = { id: "abc", createdAt: "", scope: null, focused: null, workspaces: [], windows: [] };
+    exec.followWardDesktop(true);
+    const refused = /taken on another desktop/;
+    await expect(exec.onDesktop(() => restoreLayout({ ...saved, desktop: "/run/other/desktop" }))).rejects.toThrow(refused);
+    // One from before snapshots recorded their desktop was taken on the live session.
+    await expect(exec.onDesktop(() => restoreLayout(saved))).rejects.toThrow(refused);
+  });
+
+  it("ignores PUCK_OUTPUTS on a ward's desktop, whose output isn't one of the user's", async () => {
+    const exec = await withWard(ward);
+    vi.stubEnv("PUCK_OUTPUTS", "DP-2");
+    const { allowedOutputs } = await import("../src/scope.ts");
+    expect(await exec.onDesktop(allowedOutputs)).toEqual(["DP-2"]);
+    exec.followWardDesktop(true);
+    expect(await exec.onDesktop(allowedOutputs)).toBeNull();
   });
 });

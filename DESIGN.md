@@ -1,7 +1,8 @@
 # Puck design
 
-Puck lets agents see and drive the real desktop on gaia-arch, and shows live
-agent status on that desktop. It has two parts that share one repo:
+Puck lets agents see and drive a desktop on gaia-arch: the real one, or the
+private one of the agent's ward. It also shows live agent status on the real
+desktop. It has two parts that share one repo:
 
 1. **`puck` MCP server** (TypeScript, stdio). Wraps Umbriel's IPC, Noctalia's
    IPC, and `grim`.
@@ -81,6 +82,58 @@ agent status on that desktop. It has two parts that share one repo:
   file is an undocumented positional format, so Puck doesn't parse it.
 
 ## MCP server
+
+### Which desktop
+
+Goal (2026-11-19): parallel agents drive and check GUI apps without fighting over
+the one live session and its cursor. [Ward](https://github.com/Axl47/ward) gives
+a T3 worktree a private desktop for that: a headless Umbriel on a session bus
+and `XDG_RUNTIME_DIR` of its own, with no shell. Ward's `docs/DESIGN.md`
+("Desktops") has how it is built; this is how Puck picks.
+
+Puck acts on the desktop its child processes' environment names
+(`XDG_RUNTIME_DIR`, `WAYLAND_DISPLAY`, `UMBRIEL_SOCKET`,
+`DBUS_SESSION_BUS_ADDRESS`): `umbriel`, `grim`, the Wayland helper and AT-SPI
+all find their sockets through those, and so does Puck's own lock (below).
+`exec.ts` picks that environment once per MCP tool call or CLI command
+(`onDesktop`), and everything the call runs gets it, so a call can't start on one
+desktop and finish on another when a second call switches, or when the ward
+restarts under it.
+
+- **For an agent in a ward, the ward's desktop.** Puck runs `ward desktop` in
+  its own folder: exit 0 prints the ward desktop's environment (starting the
+  ward and the desktop when they aren't up; a shell script reading two files,
+  about 10 ms, once they are), exit 3 means the folder has no ward, and a
+  missing `ward` means the machine has none (an error inside a ward, where it
+  can't be missing); both of those are the live session. Any other failure is reported to the agent, not papered over with
+  the live session: that would put its windows on the user's screen. The MCP
+  server always asks (it is one process outside the ward for the whole thread,
+  so nothing could prefix its calls); the CLI asks when it runs inside a ward
+  (`WARD_ID` is set), where an agent's shell still has the live session's
+  environment and a bare `puck pointer click` would otherwise land on the
+  user's screen.
+- **Otherwise the live session,** or whatever the environment names: the CLI
+  outside a ward is an ordinary Wayland program, so `ward desktop -- puck state`
+  from the host reads that ward's desktop.
+
+`desktop_state` reports which one (`desktop: "ward" | "live"`) and takes the
+same field to move the session, for when the user wants something on their own
+screen; `PUCK_DESKTOP=live` does the same for one CLI command in a ward. The
+switch applies to calls that start after it, and it is per MCP server, so
+subagents sharing the server share it; `desktop_state` itself picks after
+switching, so `desktop: "live"` still works when the ward's desktop won't start.
+`PUCK_OUTPUTS` names the user's monitors, so it limits nothing on a ward's
+desktop. A layout snapshot records the desktop it was taken on (its
+`XDG_RUNTIME_DIR`) and restores only there: every ward's desktop has the same
+output and workspace names, so one would otherwise apply anywhere. `puck spend`
+and `puck help` touch no desktop and start none.
+
+A ward's desktop has no Noctalia: `desktop_state` gives `shell: null`, and
+`notifications`, `dismiss_notification` and `shell_settings` refuse there
+instead of reading or changing the user's shell. `launch_app` needs nothing
+special: Umbriel starts the program, and the ward's Umbriel runs inside the
+ward, so the app can reach the ward's `localhost` ports. X11-only apps don't
+run there (no Xwayland).
 
 ### Tiers
 
@@ -239,8 +292,9 @@ Umbriel applies most actions to the focused window **on the output under the
 cursor**, so focusing alone isn't enough: Puck uses `window-focus-warp`, which
 moves the cursor too. Every mutating call runs inside `withFocus`, which:
 
-- takes a `flock` in `$XDG_RUNTIME_DIR` shared by every Puck process (each
-  agent gets its own MCP server), so two agents' sequences can't interleave;
+- takes a `flock` in the desktop's `$XDG_RUNTIME_DIR` shared by every Puck
+  process on that desktop (each agent gets its own MCP server), so two agents'
+  sequences can't interleave; a ward's desktop has its own;
 - pauses focus-follows-mouse with a runtime override so the user's mouse can't
   steal focus mid-sequence. The user's value is saved to a file first and put
   back afterwards, on SIGTERM, and, if Puck is SIGKILLed, by the `flock` child
@@ -290,7 +344,7 @@ The cursor ends up on the user's focused window, not where it was.
 
 ```
 src/
-  exec.ts        child processes; finds the Wayland display agents lack
+  exec.ts        child processes; which desktop (a ward's or the live one) and its environment
   umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
   noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
   capture.ts     grim, scaled and encoded by grim itself
