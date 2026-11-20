@@ -47,14 +47,14 @@ puck open helium http://localhost:5173      # a page of a dev server the agent a
 
 One case can still reach your screen: an app that keeps a single copy per user (Zed, an already running browser profile) hands a second launch to the copy that is running, and if that copy is on your screen, so is the new window. `puck open` then reports no window of its own and says so. An app started fresh on the private desktop stays there.
 
-Puck acts on the private desktop once the agent has one: in a warded worktree from the first call, in another thread from its first open, and from then on for the rest of the thread (Ward stops an idle desktop and starts it again, empty, on the next call). Until then, and outside T3, it looks at the live session, and `launch_app` refuses until the agent either has a private desktop or asks for the live session. It asks `ward desktop` each time, and if that fails it says so rather than falling back to your screen.
+Puck acts on the private desktop once the agent has one: in a warded worktree from the first call, in another thread from its first open, and from then on for the rest of the thread (Ward stops an idle desktop and starts it again, empty, on the next call). Until then, and outside T3, it looks at the live session, and `launch_app` refuses until the agent either has a private desktop or asks for the live session. It asks `ward desktop` each time, and if that fails, or answers "none" for a thread that had a desktop, or names your session, it says so rather than falling back to your screen.
 
 On a private desktop the input tools (click, type, keys, close) always work, since everything there is the agent's own. Pointer coordinates can be counted from a window's corner (`window_id`, `--window ID`): on a private desktop, the pixels of a screenshot of it.
 
 An MCP server that isn't told its thread (Codex's, today) can't find a thread's desktop, so it stays on the live session, where it refuses input and `launch_app`; the `puck` CLI in the agent's shell does everything there instead.
 
 - **MCP server:** `desktop_state` says which (`desktop`), and `desktop_state` with `desktop: "live"` moves the session to your screen (`"private"` moves it back).
-- **CLI:** `puck state` says which. For an agent (in a ward or a T3 thread) it is the private desktop when there is one; `PUCK_DESKTOP=live puck …` acts on your screen, and an agent's input commands reach it only with that. In your own terminal it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
+- **CLI:** `puck state` says which. For an agent (in a ward or a T3 thread, told by its environment, a parent process's, or T3's agents' cgroup) it is the private desktop when there is one; `PUCK_DESKTOP=live puck …` acts on your screen. Input commands reach your screen only from your own terminal (one your session started, or a login) or with `PUCK_DESKTOP=live`; anything else, such as a service, can look but not act. In your own terminal it follows its environment, so `ward desktop -- puck state` reads a ward's desktop from the host.
 
 A private desktop is one 1280×720 output with no shell, so `notifications`, `dismiss_notification` and `shell_settings` refuse there, X11-only apps don't run, and `PUCK_OUTPUTS` doesn't apply. A layout snapshot restores only on the desktop it was taken on.
 

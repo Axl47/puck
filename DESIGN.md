@@ -113,9 +113,45 @@ restarts under it.
   the live session: that would put its windows on the user's screen. The MCP
   server always asks (it is one process outside the ward for the whole thread,
   so nothing could prefix its calls); the CLI asks when an agent runs it
-  (`WARD_ID` or `T3CODE_THREAD_ID` is set), whose shell still has the live session's
-  environment, so a bare `puck pointer click` would otherwise land on the
+  (below), whose shell still has the live session's environment, so a bare
+  `puck pointer click` would otherwise land on the user's screen.
+- **Once private, never live by default.** Puck notes every thread (or ward)
+  `ward desktop` has given a desktop, in
+  `~/.local/state/puck/private-desktops` of the account's home folder (not
+  `XDG_STATE_HOME` or `HOME`, which a hermetic test runner changes). If Ward
+  later answers "none" for it, the call fails and says how to get the desktop
+  back (`puck open`) or move to the user's screen on purpose, instead of acting
+  on the live session. Ward keeps its own marker for good too; this is the
+  backstop for when its answer still changes (a forgotten marker, a caller
+  whose `XDG_STATE_HOME` points Ward elsewhere). A red team (2026-11-20) found
+  both: Ward forgot the marker of a thread its T3 didn't list, and on this
+  machine that was most threads, whose next calls then read and arranged the
   user's screen.
+- **Never the live session as a private desktop.** Ward keeps a desktop's files
+  in the runtime folder every program of the user can write. Puck refuses an
+  environment from `ward desktop` that leads to the user's session: its folder
+  is `/run/user/<uid>`, or its Wayland, Umbriel or bus socket is one of that
+  folder's sockets by inode, so a symlink or hard link doesn't get past.
+  Otherwise two forged files made Puck call the live session "private" and drop
+  every live-session guard. Ward checks the files itself as well.
+- **Who runs the CLI.** `src/caller.ts` decides, and the absence of
+  `T3CODE_THREAD_ID` is never taken to mean the user, since launchers drop it
+  (`env -i`, `systemd-run`, a test runner, a tmux server started elsewhere).
+  An agent is a process whose environment has `T3CODE_THREAD_ID` or `WARD_ID`;
+  or whose nearest parent with one has it, in which case Puck hands that id
+  back to `ward`, so the command lands on its thread's desktop; or, failing
+  both, one in T3's agents' cgroup (`app-t3code.slice`, where T3 puts every
+  agent and Ward every ward and desktop), which Puck can't place, so it refuses
+  every desktop command there unless `PUCK_DESKTOP=live` asks for the user's
+  screen. The user is a process in a unit their session started (an `app-*`
+  scope or unit under `app.slice`: a terminal from a launcher or keybind) or a
+  login session (tty, ssh). Anything else (a service such as Miranda's
+  recorder, a `systemd-run` unit) may look at the live session but not act on
+  it. Parents are read from `/proc`, whose `environ` is each process's
+  environment as it started, which is what T3 gives an agent's shell. Not
+  covered: a tmux server the user started runs whatever an agent sends it as
+  the user's; a shared tmux server started by one thread hands its id to
+  another's panes; and a program that means to can name another thread's id.
 - **Otherwise the live session,** or whatever the environment names: the CLI
   in the user's own terminal is an ordinary Wayland program, so `ward desktop -- puck state`
   from the host reads that ward's desktop.
@@ -235,10 +271,12 @@ setting, which left an agent on its own desktop able to look but not act.)
 Pointer input is synthetic input like typing, so it sits in the invasive
 tier; reading the pointer (`inspect`) is in observe. The CLI's pointer commands
 need no `PUCK_INVASIVE` (a script asks for them explicitly) but honour
-`PUCK_OUTPUTS`. From an agent's shell (a ward or a T3 thread) the input
-commands (`pointer move|click|drag|scroll`, `keys`, `type`, `focus`) act on the live
-session only with `PUCK_DESKTOP=live`: before its first open an agent's
-commands still resolve there, and a stray `puck type` would land in the
+`PUCK_OUTPUTS`. The input commands (`pointer move|click|drag|scroll`, `keys`,
+`type`, `focus`) act on the live session only from the user's own terminal
+("Who runs the CLI" above) or with `PUCK_DESKTOP=live`: before its first open
+an agent's commands still resolve there, and a stray `puck type` would land
+in the user's app. Until the red team above, this keyed off the agent's
+variables alone, so a command whose launcher dropped them typed into the
 user's app. Points are global, or with a window (`window_id`, `--window`)
 counted from its top-left corner, which on a private desktop (scale 1) is
 what an agent reading a screenshot of the window has; such a point is refused
@@ -416,6 +454,7 @@ The cursor ends up on the user's focused window, not where it was.
 ```
 src/
   exec.ts        child processes; which desktop (a ward's or the live one) and its environment
+  caller.ts      who runs a CLI command: an agent (which thread), the user, or neither
   umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
   noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
   capture.ts     grim, scaled and encoded by grim itself

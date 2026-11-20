@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
-import { readdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 
 const liveRuntimeDir = process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 1000}`;
@@ -55,6 +57,24 @@ export function followPrivateDesktop(on: boolean): void {
 /** False once the live session was chosen (desktop_state, PUCK_DESKTOP=live, the user's own terminal). */
 export const followsPrivateDesktop = () => followPrivate;
 
+/** The thread (or, outside T3, the ward) whose private desktop `ward desktop` finds. */
+const owner = () => process.env.T3CODE_THREAD_ID || process.env.WARD_ID || undefined;
+
+/**
+ * Where Puck notes each thread or ward that has had a private desktop. In the
+ * home folder of the user's account, not XDG_STATE_HOME or HOME: a command whose
+ * environment differs (a hermetic test runner) must still find the note.
+ */
+const hadPrivateDir = () => join(userInfo().homedir, ".local/state/puck/private-desktops");
+const hadPrivateFile = (who: string) => join(hadPrivateDir(), who.replace(/[^A-Za-z0-9_-]/g, "_"));
+
+/** Notes that `who` has a private desktop, so it never quietly lands on the live session again. */
+function notePrivate(who: string | undefined): void {
+  if (!who || existsSync(hadPrivateFile(who))) return;
+  mkdirSync(hadPrivateDir(), { recursive: true });
+  writeFileSync(hadPrivateFile(who), `${who}\n`);
+}
+
 /**
  * Starts the agent's private desktop if it isn't up: Ward starts a thread's when
  * a command runs on it. Returns null once it is up, or why there is none to
@@ -63,6 +83,7 @@ export const followsPrivateDesktop = () => followPrivate;
 export async function startPrivateDesktop(): Promise<string | null> {
   try {
     await promisify(execFile)("ward", ["desktop", "--", "true"], { timeout: 90_000 });
+    notePrivate(owner());
     return null;
   } catch (err) {
     const { code, stderr } = err as { code?: string | number; stderr?: string };
@@ -72,38 +93,90 @@ export async function startPrivateDesktop(): Promise<string | null> {
   }
 }
 
+/** The user's own session folder, whatever this process's XDG_RUNTIME_DIR says. */
+const sessionDir = () => `/run/user/${userInfo().uid}`;
+const inode = (path: string) => {
+  try {
+    const { dev, ino } = statSync(path);
+    return `${dev}:${ino}`;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Whether a private desktop's environment leads to the user's live session: its
+ * folder is the session's, or one of its sockets (Wayland, Umbriel, the bus) is
+ * one of the session's, by inode, so neither a link nor a renamed path gets past.
+ */
+export function namesLiveSession(vars: Record<string, string | undefined>, session = sessionDir()): boolean {
+  const names = (() => {
+    try {
+      return readdirSync(session);
+    } catch {
+      return []; // no session here
+    }
+  })();
+  const live = new Set(names.map((name) => join(session, name)).filter((path) => lstatSync(path, { throwIfNoEntry: false })?.isSocket()).map(inode));
+  live.delete(undefined);
+  const runtime = vars.XDG_RUNTIME_DIR ?? "";
+  const wayland = vars.WAYLAND_DISPLAY && (isAbsolute(vars.WAYLAND_DISPLAY) ? vars.WAYLAND_DISPLAY : join(runtime, vars.WAYLAND_DISPLAY));
+  const bus = /(?:^|;)unix:path=([^,;]+)/.exec(vars.DBUS_SESSION_BUS_ADDRESS ?? "")?.[1];
+  const sameDir = (() => {
+    try {
+      return realpathSync(runtime) === realpathSync(session);
+    } catch {
+      return false;
+    }
+  })();
+  return sameDir || [wayland, vars.UMBRIEL_SOCKET, bus].some((path) => path && live.has(inode(path)));
+}
+
 /**
  * The environment of the agent's private desktop, from `ward desktop` (a few ms
  * once the desktop is up). In a ward that starts the ward and its desktop when
  * they aren't up; elsewhere it answers from the thread's first open on
  * (`puck open`, launch_app, `ward desktop -- CMD`), restarting a desktop that
- * stopped meanwhile. null when there is none.
+ * stopped meanwhile. null when there is none, which a thread or ward that has
+ * had one never gets: Ward forgetting it must not put it on the user's screen.
  */
 async function privateDesktop(): Promise<DesktopEnv | null> {
+  let stdout: string;
   try {
-    const { stdout } = await promisify(execFile)("ward", ["desktop"], { encoding: "utf8", timeout: 90_000 });
-    const vars = Object.fromEntries(
-      stdout
-        .split("\n")
-        .filter((line) => line.includes("="))
-        .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
-    );
-    const { XDG_RUNTIME_DIR } = vars;
-    if (!XDG_RUNTIME_DIR || !vars.WAYLAND_DISPLAY) throw new Error(`\`ward desktop\` printed no desktop: ${stdout.trim()}`);
-    // Without what would still point a helper at the live session: an inherited
-    // Wayland socket, which wins over WAYLAND_DISPLAY, and its accessibility bus.
-    const { WAYLAND_SOCKET: _socket, AT_SPI_BUS_ADDRESS: _a11y, ...inherited } = process.env;
-    return { ...inherited, ...vars, XDG_RUNTIME_DIR };
+    ({ stdout } = await promisify(execFile)("ward", ["desktop"], { encoding: "utf8", timeout: 90_000 }));
   } catch (err) {
     // No Ward on this machine (and not in a ward, where it must be), or it says
-    // there is no private desktop here (exit 3): the live session. Anything else
-    // is a desktop that didn't start, and falling back would put this agent's
-    // windows on the user's screen.
+    // there is no private desktop here (exit 3): the live session, unless this
+    // thread had one. Anything else is a desktop that didn't start, and falling
+    // back would put this agent's windows on the user's screen.
     const { code, stderr } = err as { code?: string | number; stderr?: string };
+    const who = owner();
+    if (code === 3 && who && existsSync(hadPrivateFile(who))) {
+      throw new Error(
+        `This thread had a private desktop, but Ward no longer gives it one (${stderr?.trim().replace(/^ward: /, "") || "exit 3"}), and Puck won't fall back to the user's screen. \`puck open CMD\` starts it again; for the user's screen, use the live session explicitly (PUCK_DESKTOP=live, or desktop_state with desktop "live").`,
+      );
+    }
     if ((code === "ENOENT" && !process.env.WARD_ID) || code === 3) return null;
     if (code === "ENOENT") throw new Error("This is a ward, but `ward` isn't on PATH, so its desktop can't be found.");
     throw new Error(`The private desktop didn't start: ${stderr?.trim() || (err instanceof Error ? err.message : String(err))}`);
   }
+  const vars = Object.fromEntries(
+    stdout
+      .split("\n")
+      .filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+  );
+  const { XDG_RUNTIME_DIR } = vars;
+  if (!XDG_RUNTIME_DIR || !vars.WAYLAND_DISPLAY) throw new Error(`The private desktop didn't start: \`ward desktop\` printed no desktop: ${stdout.trim()}`);
+  // Ward keeps its files where any program of the user can write: never take the user's screen for a private desktop.
+  if (namesLiveSession(vars)) {
+    throw new Error("`ward desktop` named the user's live session as this agent's private desktop, so Puck won't act on it as one. For the user's screen, use the live session explicitly (PUCK_DESKTOP=live, or desktop_state with desktop \"live\").");
+  }
+  notePrivate(owner());
+  // Without what would still point a helper at the live session: an inherited
+  // Wayland socket, which wins over WAYLAND_DISPLAY, and its accessibility bus.
+  const { WAYLAND_SOCKET: _socket, AT_SPI_BUS_ADDRESS: _a11y, ...inherited } = process.env;
+  return { ...inherited, ...vars, XDG_RUNTIME_DIR };
 }
 
 const chosen = new AsyncLocalStorage<{ desktop: Desktop; env: DesktopEnv }>();
