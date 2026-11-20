@@ -100,7 +100,12 @@ Text from apps without an accessibility tree is read by `tesseract` from a captu
 | Variable | Effect |
 |---|---|
 | `PUCK_INVASIVE=1` | Lets the invasive MCP tools above act on the live session (a private desktop needs nothing) |
+| `PUCK_ACTIVITY_DIR` | Where activity records go and the recorder's `on` file is read (default `$XDG_RUNTIME_DIR/ward/activity`) |
 | `PUCK_OUTPUTS=A,B` | Mutating tools and pointer input only touch these outputs; global changes are off |
+
+## Activity records
+
+While the host's recorder is on (it keeps `$XDG_RUNTIME_DIR/ward/activity/on` fresh), each MCP tool call leaves a small JSON record in that folder: the tool, timing, outcome, desktop, and sanitized arguments. Typed text, pixels and captured text are never recorded. Wards can't see the folder, and `PUCK_ACTIVITY_DIR` overrides it.
 
 ## Development
 
