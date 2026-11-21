@@ -1,10 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { record, reportedDesktop } from "./activity.ts";
 import { registerArrange } from "./tools/arrange.ts";
 import type { Session } from "./tools/common.ts";
 import { registerInvasive } from "./tools/invasive.ts";
 import { registerObserve } from "./tools/observe.ts";
-import { desktop, followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDesktop } from "./exec.ts";
+import { type Desktop, desktop, followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDesktop } from "./exec.ts";
 
 /**
  * launch_app opens a window: on the agent's private desktop, started here if
@@ -36,22 +37,36 @@ export function createServer(): McpServer {
   // Every tool call acts on one desktop, chosen as it starts (launch_app starts a private one first); desktop_state
   // chooses for itself, after the switch it may carry, so it can leave a private
   // desktop that doesn't start. The SDK types a handler by its tool's schema, so
-  // the wrapper is put back to that type.
+  // the wrapper is put back to that type. Every call, desktop_state included, is
+  // also timed and handed to the activity recorder, which does nothing when off.
   const registerTool = server.registerTool.bind(server);
   server.registerTool = ((name, config, handler) => {
-    if (name === "desktop_state") return registerTool(name, config, handler);
     const call = handler as (...args: unknown[]) => unknown;
     return registerTool(name, config, (async (...args: unknown[]) => {
-      // Decided once, as the call starts: a switch to the live session made while
-      // the private desktop comes up must not take this launch with it.
-      const opens = name === "launch_app" && followsPrivateDesktop();
-      if (opens) await privateForOpening();
-      return onDesktop(() => {
-        if (opens && desktop() !== "private") {
-          throw new Error("Puck was switched to the live session while this launch waited for the private desktop; nothing was opened. Call launch_app again.");
-        }
-        return call(...args);
-      });
+      const start = Date.now();
+      let on: Desktop | null = null;
+      const run = async () => {
+        if (name === "desktop_state") return call(...args);
+        // Decided once, as the call starts: a switch to the live session made while
+        // the private desktop comes up must not take this launch with it.
+        const opens = name === "launch_app" && followsPrivateDesktop();
+        if (opens) await privateForOpening();
+        return onDesktop(() => {
+          on = desktop();
+          if (opens && on !== "private") {
+            throw new Error("Puck was switched to the live session while this launch waited for the private desktop; nothing was opened. Call launch_app again.");
+          }
+          return call(...args);
+        });
+      };
+      try {
+        const result = await run();
+        record({ tool: name, args: args[0], start, end: Date.now(), outcome: { result }, desktop: on ?? reportedDesktop(result) });
+        return result;
+      } catch (thrown) {
+        record({ tool: name, args: args[0], start, end: Date.now(), outcome: { thrown }, desktop: on });
+        throw thrown;
+      }
     }) as typeof handler);
   }) as typeof registerTool;
   const session: Session = { owned: new Set() };

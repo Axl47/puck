@@ -449,11 +449,38 @@ The cursor ends up on the user's focused window, not where it was.
   elsewhere; windows that have since moved off those outputs are skipped.
   Column order within a workspace isn't restored.
 
+### Activity records
+
+A recorder on the host (Miranda's Mneme) profiles how agents work. It switches
+recording on by keeping a file `on` fresh in `$XDG_RUNTIME_DIR/ward/activity/`
+(`PUCK_ACTIVITY_DIR` overrides the folder): the file's first word is the epoch
+seconds it was last written, and it counts for 30 s. Ward owns that folder and
+hides it from wards, so only host processes, such as this MCP server, can see it.
+
+While it is on, every MCP tool call, `desktop_state` included, leaves one
+`puck.<pid>.<n>.json` there (written as a dotfile and renamed): the tool, start
+and end in epoch milliseconds, whether it succeeded and its error, the desktop
+it acted on, the process's cgroup (`scope`), the T3 thread, the arguments and a
+summary of the result. Arguments are cut (strings to 300 characters, arrays to
+50 items); a screenshot's result is its size and a hash of the image, so a
+recorder can see an unchanged screen being captured again.
+
+Never recorded: text an agent types (`type_text` keeps only its length,
+`press_keys` keeps named keys and chords with a command modifier and counts
+every other key, a shifted character included, since either can be a password;
+neither tool's error message is kept, because a failed `wtype` names what it
+was typing), pixels, and anything captured from the screen (page,
+OCR or accessibility text, notification bodies). Recording never changes a
+tool's result and never creates the folder. The CLI records nothing: it runs in
+a ward, which can't see the folder, and its calls are already recorded as shell
+commands.
+
 ### Shape of the code
 
 ```
 src/
   exec.ts        child processes; which desktop (a ward's or the live one) and its environment
+  activity.ts    activity records of MCP tool calls, for the host's recorder
   caller.ts      who runs a CLI command: an agent (which thread), the user, or neither
   umbriel.ts     typed Umbriel client (zod over `--json`), withFocus
   noctalia.ts    `noctalia msg`, notification history, D-Bus dismiss
