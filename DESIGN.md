@@ -1,6 +1,6 @@
 # Puck design
 
-Puck lets agents see and drive a desktop on gaia-arch: the real one, or the
+Puck lets agents see and drive a desktop on the author's Linux machine: the real one, or the
 agent's own private one. It also shows live agent status on the real
 desktop. It has two parts that share one repo:
 
