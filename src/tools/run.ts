@@ -50,10 +50,9 @@ async function poll<T>(timeoutMs: number, extra: unknown, check: () => Promise<T
   for (;;) {
     const found = await check();
     if (found !== null) return found;
-    const left = deadline - Date.now();
-    if (left <= 0) return null;
     if (cancelled(extra)) throw new Error("Cancelled.");
-    await sleep(Math.min(250, left));
+    await sleep(Math.min(250, deadline - Date.now()));
+    if (Date.now() >= deadline) return null;
   }
 }
 
