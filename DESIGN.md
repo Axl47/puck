@@ -296,6 +296,27 @@ the live session that would rearrange the user's screen, so it stays a
 refusal, and `puck focus ID` (`focus_window`) brings the window back first.
 Keys without a window or overlay go to the focused window, for the same
 reason.
+- A click, the start of a drag or a scroll is refused on the strip of a window
+  peeking in at an output's edge: one its output cuts off, with less than
+  160 px showing on that side, unless the call counted its point from that
+  window. In a scrolling layout the neighbours of the focused column peek in
+  at the output's edge, as wide as what the focused column leaves free, and
+  the strip that shows is the edge of the window, where its own title-bar
+  controls sit.
+  A benchmark agent (2026-11-23) clicked the 31 px of Obsidian peeking in on
+  its private desktop, globally, to bring it into view, and hit its close
+  button. Checked under the lock at the exact target, before and after the
+  pointer moves there, where a window point gets its own check; not into an
+  overlay, nor for a drag's release or `pointer_move`. A share of the window (v1:
+  under half on screen) refused a neighbour beside a ⅓-width column with
+  558 px of a browser page showing, and a focused column wider than the
+  output; the strip's width doesn't depend on the window's.
+  Decided against: laying out the private desktop so nothing peeks, which is
+  Ward's config and doesn't get there (with `center_focused = "always"`
+  strips of 14 and 3 px remain, since apps pick widths just under the
+  output's), short of leaving the scrolling layout; and focusing the window in
+  place of the click, which moves the layout under the agent's coordinates,
+  and on the live session the user's.
 
 ### Pointer
 
