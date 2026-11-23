@@ -51,7 +51,7 @@
         { "agg": "median", "field": "context_tokens", "label": "Context" },
         { "agg": "median", "field": "input_tokens", "label": "Input" },
         { "agg": "median", "field": "output_tokens", "label": "Output" },
-        { "agg": "sum", "field": "failed_actions", "label": "Failed" }
+        { "agg": "mean", "field": "failed_actions", "label": "Failed / run", "format": "number" }
       ]
     },
     {
@@ -67,13 +67,6 @@
       "rows": "task",
       "columns": ["model", "harness"],
       "measure": { "agg": "median", "field": "work_tokens" }
-    },
-    {
-      "kind": "bars",
-      "title": "Failed actions",
-      "by": "model",
-      "stack": "harness",
-      "measure": { "agg": "sum", "field": "failed_actions" }
     }
   ]
 }
