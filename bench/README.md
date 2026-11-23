@@ -45,7 +45,7 @@ node bench/run.ts --client codex --model gpt-6.2-sol --tasks all --reps 3
 node bench/run.ts --client claude-desktop --model claude-opus-5-5 --tasks all --reps 3
 ```
 
-- **Codex** runs headless, through the bundled `unified-computer-use` plugin. Its `CODEX_HOME` links to your login, plugins and computer-use approvals, but leaves out your AGENTS.md and config.
+- **Codex** runs headless, through the bundled `unified-computer-use` plugin. Its `CODEX_HOME` links to your login, plugins and computer-use folder, and has its own config that turns on only that plugin, so your AGENTS.md and config stay out. Each run allows computer use to drive Helium and Obsidian for that session only (the "allow for this session" answer), since headless Codex can't ask you.
 - **Claude desktop** can't be scripted. For each run, the runner opens the apps and copies the prompt to the clipboard. You then:
   1. Start a new Code session on the named model, with computer use on.
   2. Paste the prompt, and leave the Mac alone while it runs.

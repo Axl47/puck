@@ -8,7 +8,7 @@
 //   node bench/run.ts --client codex --model gpt-6.2-sol
 //   node bench/run.ts --client claude-desktop --model claude-opus-5-5   (a person pastes each prompt)
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { homedir } from "node:os";
 import { extname, join, normalize } from "node:path";
@@ -101,8 +101,8 @@ const appsLeft = () => (MAC ? spawnSync("pgrep", ["-f", APPS]).status === 0 : (J
  */
 async function killApps() {
   spawnSync("pkill", ["-f", APPS]);
-  const cgroup = readFileSync("/proc/self/cgroup", "utf8").match(/^0::(.*)$/m)?.[1];
-  if (!MAC && process.env.WARD_ID && cgroup) spawnSync("pkill", ["--cgroup", cgroup, "-x", "helium|electron"]);
+  const cgroup = !MAC && process.env.WARD_ID ? readFileSync("/proc/self/cgroup", "utf8").match(/^0::(.*)$/m)?.[1] : undefined;
+  if (cgroup) spawnSync("pkill", ["--cgroup", cgroup, "-x", "helium|electron"]);
   for (let i = 0; i < 40 && appsLeft(); i++) await sleep(250);
   if (appsLeft()) throw new Error(MAC ? "benchmark apps still running" : `windows still open on the private desktop: ${puck("state")}`);
 }
@@ -150,9 +150,20 @@ async function prepare(dir: string) {
 const CODEX_HOME = join(homedir(), ".cache", "puck-bench", "codex-home");
 const USER_CODEX = join(homedir(), ".codex");
 function codexHome() {
-  mkdirSync(CODEX_HOME, { recursive: true });
-  const shared = MAC ? ["auth.json", "plugins", "computer-use"] : ["auth.json"];
+  mkdirSync(join(CODEX_HOME, ".tmp"), { recursive: true });
+  const shared = MAC ? ["auth.json", "plugins", "computer-use", ".tmp/bundled-marketplaces"] : ["auth.json"];
   for (const name of shared) if (!existsSync(join(CODEX_HOME, name))) symlinkSync(join(USER_CODEX, name), join(CODEX_HOME, name));
+  // Codex finds plugins only through a marketplace named in config.toml (not
+  // through -c) whose root is inside CODEX_HOME. Approval for a plugin's MCP
+  // server goes under the plugin: a top-level mcp_servers.cua_repl entry would
+  // be a second server with no command. Headless Codex refuses MCP calls that
+  // need approval, and cua_repl's `js` tool is every input action.
+  if (MAC)
+    writeFileSync(join(CODEX_HOME, "config.toml"), [
+      `[marketplaces.openai-bundled]`, `source_type = "local"`, `source = ${JSON.stringify(join(CODEX_HOME, ".tmp/bundled-marketplaces/openai-bundled"))}`, ``,
+      `[plugins."unified-computer-use@openai-bundled"]`, `enabled = true`, ``,
+      `[plugins."unified-computer-use@openai-bundled".mcp_servers.cua_repl]`, `default_tools_approval_mode = "approve"`, ``,
+    ].join("\n"));
   checkCodexHome();
   return CODEX_HOME;
 }
@@ -180,11 +191,10 @@ function agentCommand(prompt: string, dir: string): string[] {
   // Everything that isn't driving the desktop is off. Code mode's `exec` stays:
   // it is how Codex calls any tool, MCP ones included.
   const off = ["shell_tool", "unified_exec", "apps", "remote_plugin", "browser_use", "browser_use_external", "in_app_browser", "image_generation", "multi_agent", "goals", "sleep_tool", "skill_search", "tool_suggest", "daemon_auto_start"];
-  const base = ["codex", "exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "-C", dir, "-m", model, "-c", `model_reasoning_effort="${effort}"`, "-c", `web_search="disabled"`];
+  // On the Mac, the "user config" is the one codexHome writes, which turns on the computer-use plugin.
+  const base = ["codex", "exec", ...(MAC ? [] : ["--ignore-user-config"]), "--skip-git-repo-check", "--sandbox", "read-only", "-C", dir, "-m", model, "-c", `model_reasoning_effort="${effort}"`, "-c", `web_search="disabled"`];
+  if (MAC) return [...base, ...off.flatMap((f) => ["--disable", f]), "--json", prompt];
   // Headless Codex refuses MCP calls that need approval, which is every input tool.
-  if (MAC) {
-    return [...base, "-c", `plugins."unified-computer-use@openai-bundled".enabled=true`, "-c", `mcp_servers.cua_repl.default_tools_approval_mode="approve"`, ...off.flatMap((f) => ["--disable", f]), "--json", prompt];
-  }
   // Codex hands MCP servers a scrubbed environment, so pass Puck what tells it
   // which private desktop is ours; without it Puck sees the live session.
   const keep = ["WARD_ID", "WARD_ROOT", "WARD_SHIMS", "T3CODE_THREAD_ID", "TMPDIR", "PATH", "XDG_RUNTIME_DIR"];
@@ -196,17 +206,38 @@ function agentCommand(prompt: string, dir: string): string[] {
   ];
 }
 
+/**
+ * Computer use asks the person, per app, before touching it; headless Codex
+ * can't answer, so the ask is declined. Answering "allow for this session"
+ * writes computer-use/sessions/<thread-id>.toml, so write that for the
+ * benchmark's two apps as soon as Codex names the thread, which it does
+ * before the model's first request.
+ */
+function allowAppsForThread(stdout: NodeJS.ReadableStream) {
+  let file: string | undefined;
+  createInterface({ input: stdout }).on("line", (line) => {
+    const id = !file && line.match(/^\{"type":"thread\.started","thread_id":"([\w-]+)"/)?.[1];
+    if (!id) return;
+    file = join(CODEX_HOME, "computer-use", "sessions", `${id}.toml`);
+    writeFileSync(file, `[apps]\nallowed = ["net.imput.helium", "md.obsidian"]\n`);
+  });
+  /** Removes the approval once the run is over. */
+  return () => file && rmSync(file, { force: true });
+}
+
 function runAgent(prompt: string, dir: string, transcript: string): Promise<number> {
   const [cmd, ...argv] = agentCommand(prompt, dir);
   if (!cmd) throw new Error("empty agent command");
   const child = spawn(cmd, argv, { cwd: dir, env: childEnv(), stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.pipe(createWriteStream(transcript));
+  const revoke = MAC && client === "codex" ? allowAppsForThread(child.stdout) : undefined;
   child.stderr.pipe(createWriteStream(`${transcript}.err`));
   const started = Date.now();
   return new Promise((resolve) => {
     const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.on("close", () => {
       clearTimeout(timer);
+      revoke?.();
       resolve(Date.now() - started);
     });
   });
