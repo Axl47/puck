@@ -72,11 +72,21 @@ const isNamedKey = (key: string) => {
   return mods.every((m) => COMMAND_MODIFIER.test(m) || /^shift$/i.test(m)) && mods.some((m) => COMMAND_MODIFIER.test(m)) && ([...last].length === 1 || NAMED_KEY.test(last));
 };
 
-/** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments). */
-const TYPING_TOOLS = new Set(["type_text", "press_keys"]);
+/** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments); a run's repeats its steps'. */
+const TYPING_TOOLS = new Set(["type_text", "press_keys", "run"]);
 
-/** A tool's arguments for the record: typed text reduced to its length, single character keys to a count, long values cut. */
+const RunArgs = z.looseObject({ steps: z.array(z.looseObject({ tool: z.string(), args: z.unknown() })) });
+
+/** A tool's arguments for the record: typed text reduced to its length, single character keys to a count, long values cut. A run's steps each as their own tool's. */
 export function sanitizeArgs(tool: string, args: unknown): unknown {
+  if (tool === "run") {
+    const parsed = RunArgs.safeParse(args);
+    if (parsed.success) {
+      const { steps, ...rest } = parsed.data;
+      return { ...(clean(rest) as object), steps: steps.slice(0, ARRAY_LIMIT).map((s) => ({ tool: cut(s.tool), args: sanitizeArgs(s.tool, s.args) ?? null })) };
+    }
+    return null; // unparsed, it could hold typed text
+  }
   if (tool === "type_text") {
     const parsed = TypeTextArgs.safeParse(args);
     if (parsed.success) {

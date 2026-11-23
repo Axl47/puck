@@ -476,6 +476,17 @@ The cursor ends up on the user's focused window, not where it was.
   to the outputs you'll touch so a restore can't undo the user's changes
   elsewhere; windows that have since moved off those outputs are skipped.
   Column order within a workspace isn't restored.
+- `run({ steps })` makes several tool calls in one, so acting and then
+  looking (click, wait for the dialog, screenshot) costs one model turn
+  instead of three. A step is `{ tool, args }`, or `{ tool: "wait", args }`
+  for a window whose app_id or title contains a string, text that shows in a
+  window or the focused output (accessibility, else OCR), or a delay. Each
+  step goes through the same wrapped handler a client call would, so it picks
+  its desktop, passes its tool's checks and leaves its own activity record.
+  Every step is checked against its tool's schema before any runs; the run
+  stops at the first failure and returns the steps before it, the error and a
+  screenshot of the focused output. `desktop_state` can't be a step, since it
+  moves every later call to another desktop.
 
 ### Activity records
 
@@ -497,7 +508,8 @@ Never recorded: text an agent types (`type_text` keeps only its length,
 `press_keys` keeps named keys and chords with a command modifier and counts
 every other key, a shifted character included, since either can be a password;
 neither tool's error message is kept, because a failed `wtype` names what it
-was typing), pixels, and anything captured from the screen (page,
+was typing; a `run` records each step's arguments the same way, and no error
+message, since a step's may be one of those), pixels, and anything captured from the screen (page,
 OCR or accessibility text, notification bodies). Recording never changes a
 tool's result and never creates the folder. The CLI records nothing: it runs in
 a ward, which can't see the folder, and its calls are already recorded as shell
@@ -522,7 +534,7 @@ src/
   layout.ts      snapshots and restore
   scope.ts       PUCK_OUTPUTS
   t3.ts          spend over T3's WebSocket RPC
-  tools/         one file per tier
+  tools/         one file per tier, and run.ts for `run`
   server.ts      registers tiers from env, stdio transport
   cli.ts         puck mcp | state | snapshot | restore | spend | inspect | pointer | keys
 helpers/

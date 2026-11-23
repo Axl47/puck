@@ -59,6 +59,8 @@ If Puck can't tell for certain which desktop an agent should use, it refuses rat
 | Arrange | `launch_app`, `focus_window`, `move_window`, `arrange_windows`, `switch_workspace`, `layout_snapshot`, `layout_restore`, `dismiss_notification`, `shell_settings` | `puck open`, `puck snapshot`, `puck restore` |
 | Invasive | `click`, `drag`, `scroll`, `pointer_move`, `type_text`, `press_keys`, `close_window`, `kill_window` | `puck pointer click\|drag\|scroll\|move`, `puck type`, `puck keys`, `puck focus` |
 
+`run` makes several of these calls in one, with waits between them (for a window, for text to show, or a delay), so an agent can act and see the result without a model turn per step.
+
 Screenshots are scaled to about 1,600 px on the long edge, so one costs an agent around 1.6k tokens.
 
 ## Requirements

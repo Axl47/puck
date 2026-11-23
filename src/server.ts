@@ -5,6 +5,7 @@ import { registerArrange } from "./tools/arrange.ts";
 import type { Session } from "./tools/common.ts";
 import { registerInvasive } from "./tools/invasive.ts";
 import { registerObserve } from "./tools/observe.ts";
+import { type Tools, registerRun } from "./tools/run.ts";
 import { type Desktop, desktop, followPrivateDesktop, followsPrivateDesktop, onDesktop, startPrivateDesktop } from "./exec.ts";
 
 /**
@@ -31,7 +32,8 @@ export function createServer(): McpServer {
         "A private desktop is one 1280×720 output with no shell and only your own windows, so arrange it, click and type on it freely (Wayland apps only). Once you have one, Puck's tools act on it: in a T3 worktree with a ward from the start, elsewhere from your first open. " +
         "If desktop_state still says live after `puck open`, this server can't tell which thread it serves: drive your desktop with the `puck` CLI in your shell instead (`puck state`, `puck inspect`, `puck pointer`, `puck keys`). " +
         "Until your first open, or after desktop_state with desktop \"live\", Puck is on the user's live session (Noctalia shell), for what the user wants on their own screen: take a layout_snapshot before rearranging and layout_restore it when your task doesn't need the new layout to stay. " +
-        "There, actions move the user's cursor onto the window they act on; batch them.",
+        "There, actions move the user's cursor onto the window they act on; batch them. " +
+        "To act and then look (click, wait for the window or text, screenshot), make it one `run` call instead of several.",
     },
   );
   // Every tool call acts on one desktop, chosen as it starts (launch_app starts a private one first); desktop_state
@@ -39,10 +41,12 @@ export function createServer(): McpServer {
   // desktop that doesn't start. The SDK types a handler by its tool's schema, so
   // the wrapper is put back to that type. Every call, desktop_state included, is
   // also timed and handed to the activity recorder, which does nothing when off.
+  // The wrapped handlers are also kept for `run`, whose steps are these same calls.
+  const tools: Tools = new Map();
   const registerTool = server.registerTool.bind(server);
   server.registerTool = ((name, config, handler) => {
     const call = handler as (...args: unknown[]) => unknown;
-    return registerTool(name, config, (async (...args: unknown[]) => {
+    const wrapped = async (...args: unknown[]) => {
       const start = Date.now();
       let on: Desktop | null = null;
       const run = async () => {
@@ -67,12 +71,16 @@ export function createServer(): McpServer {
         record({ tool: name, args: args[0], start, end: Date.now(), outcome: { thrown }, desktop: on });
         throw thrown;
       }
-    }) as typeof handler);
+    };
+    const registered = registerTool(name, config, wrapped as typeof handler);
+    tools.set(name, { schema: registered.inputSchema, call: wrapped });
+    return registered;
   }) as typeof registerTool;
   const session: Session = { owned: new Set() };
   registerObserve(server, session);
   registerArrange(server, session);
   registerInvasive(server, session);
+  registerRun(server, tools);
   return server;
 }
 
