@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { desktop } from "../exec.ts";
-import { type KeyTarget, pressKeys, typeText } from "../keys.ts";
+import { keyTarget, pressKeys, typeText } from "../keys.ts";
 import { BUTTONS, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "../pointer.ts";
 import { findWindow, msg, snapshot } from "../umbriel.ts";
 import { type Register, assertOutputs, json } from "./common.ts";
@@ -94,7 +94,7 @@ export const registerInvasive: Register = (server, session) => {
     {
       title: "Press keys",
       description:
-        "Press key chords in order, e.g. ['ctrl+l', 'Return'], into a window (focused first, then given back) or into a shell overlay that has the keyboard. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr. On a private desktop, shortcuts don't act in GTK 3 apps (text does, and GTK 4 apps and terminals take both): click the control instead.",
+        "Press key chords in order, e.g. ['ctrl+l', 'Return'], into a window (focused first, then given back; the focused window if neither window_id nor overlay is given) or into a shell overlay that has the keyboard. Keys are XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr. On a private desktop, shortcuts don't act in GTK 3 apps (text does, and GTK 4 apps and terminals take both): click the control instead.",
       inputSchema: {
         window_id: z.string().optional(),
         overlay: overlayParam.describe(
@@ -106,7 +106,7 @@ export const registerInvasive: Register = (server, session) => {
     },
     async ({ window_id, overlay, keys }) => {
       allowed();
-      return json(await pressKeys(keyTarget(window_id, overlay), keys));
+      return json(await pressKeys(await keyTarget(window_id, overlay), keys));
     },
   );
 
@@ -117,7 +117,7 @@ export const registerInvasive: Register = (server, session) => {
   const window_id = z
     .string()
     .optional()
-    .describe("Count the coordinates from this window's top-left corner instead of globally. On a private desktop those are the pixels of a screenshot of the window; where a screenshot was scaled (the sizes it returns differ), convert to the window's logical size first.");
+    .describe("Count the coordinates from this window's top-left corner instead of globally. On a private desktop those are the pixels of a screenshot of the window, and a window that isn't showing is focused first; where a screenshot was scaled (the sizes it returns differ), convert to the window's logical size first.");
   const pointerNote = " Coordinates are logical pixels: global, as desktop_state reports them, or with window_id from that window's top-left corner. Afterwards the pointer and the user's focus go back where they were.";
 
   server.registerTool(
@@ -197,13 +197,6 @@ export const registerInvasive: Register = (server, session) => {
 };
 
 const overlayParam = z.string().min(1).optional();
-
-/** A key target from press_keys' parameters: exactly one of a window and an overlay. */
-function keyTarget(windowId: string | undefined, overlay: string | undefined): KeyTarget {
-  if (windowId !== undefined && overlay === undefined) return { window: windowId };
-  if (overlay !== undefined && windowId === undefined) return { overlay };
-  throw new Error("Pass exactly one of window_id and overlay.");
-}
 
 /** A global point from optional coordinates (both or neither), counted from a window when one is given, with fromWindow's check. */
 async function pointIn(windowId: string | undefined, x: number | undefined, y: number | undefined) {

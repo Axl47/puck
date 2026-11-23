@@ -287,8 +287,15 @@ a window that opens meanwhile shifts the others. Only the check that the
 pointer is where Puck put it comes later, because the user's mouse matters
 more. What moves in the last instant (two helper starts, around 0.1 s) isn't
 caught: a live test that opened a
-terminal 40–70 ms into a click saw the click land on the terminal. `puck
-focus ID` (`focus_window`) brings a scrolled-away window back first.
+terminal 40–70 ms into a click saw the click land on the terminal. On a
+private desktop a window point that isn't showing focuses its window first,
+which brings it into view, since everything there is the agent's and models
+reliably click a window they just screenshotted without focusing it (in a
+desktop benchmark, two thirds of the failed Puck calls were that refusal). On
+the live session that would rearrange the user's screen, so it stays a
+refusal, and `puck focus ID` (`focus_window`) brings the window back first.
+Keys without a window or overlay go to the focused window, for the same
+reason.
 
 ### Pointer
 

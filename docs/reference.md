@@ -39,7 +39,7 @@ puck pointer move X,Y
 puck pointer click [X,Y] [--button left|right|middle] [--count N] [--overlay NS]
 puck pointer drag X,Y X,Y [--button …] [--overlay NS]
 puck pointer scroll [X,Y] [--dx N] [--dy N] [--overlay NS]   # wheel steps; --dy=-3 scrolls up
-puck keys (--window ID | --overlay NS) CHORD…              # e.g. ctrl+l Return, Escape
+puck keys [--window ID | --overlay NS] CHORD…              # e.g. ctrl+l Return, Escape; default: the focused window
 puck type --window ID TEXT
 puck spend                                 # today's agent spend from T3 Code, as JSON
 ```

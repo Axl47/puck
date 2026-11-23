@@ -131,6 +131,15 @@ export function typeText(windowId: string, text: string) {
 
 export type KeyTarget = { window: string } | { overlay: string };
 
+/** Where keys go: a window, an overlay, or with neither the focused window. */
+export async function keyTarget(windowId: string | undefined, overlay: string | undefined): Promise<KeyTarget> {
+  if (windowId !== undefined && overlay !== undefined) throw new Error("Pass a window or an overlay, not both.");
+  if (overlay !== undefined) return { overlay };
+  const window = windowId ?? (await focusedWindow())?.id;
+  if (!window) throw new Error("No window has focus; pass a window id (desktop_state or puck state lists them).");
+  return { window };
+}
+
 /**
  * Presses chords in order. Into a window: focused first (and checked between
  * chords), focus given back afterwards. Into an overlay: under the desktop lock,

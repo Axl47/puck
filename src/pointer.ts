@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { run, sleep } from "./exec.ts";
+import { desktop, run, sleep } from "./exec.ts";
 import { assertOutputs } from "./scope.ts";
 import { type Layer, type Output, type Snapshot, type Window, findWindow, layers, outputs, snapshot, withDesktopLock, withFocus } from "./umbriel.ts";
 
@@ -55,6 +55,9 @@ export function windowAt(snap: { windows: readonly Window[]; outputs: readonly O
   return under.sort((a, b) => rank(b) - rank(a))[0] ?? null;
 }
 
+/** A point of a window that's off screen, scrolled away or covered, so input there would reach something else. */
+export class NotShowing extends Error {}
+
 /**
  * Points counted from a window's top-left corner, as in a screenshot of it, as
  * global ones. Throws for a point that isn't showing there (off the window,
@@ -66,7 +69,7 @@ export function windowPoints(snap: Pick<Snapshot, "windows" | "outputs" | "focus
   return points.map((p) => {
     const at = { x: w.x + p.x, y: w.y + p.y };
     if (!contains({ x: 0, y: 0, width: w.w, height: w.h }, p)) throw new Error(`${p.x},${p.y} is outside window ${windowId}, which is ${w.w}×${w.h}.`);
-    if (windowAt(snap, at)?.id !== w.id) throw new Error(`${p.x},${p.y} of window ${windowId} isn't showing (hidden, scrolled away or covered); focus the window first (focus_window, or puck focus ID in a shell).`);
+    if (windowAt(snap, at)?.id !== w.id) throw new NotShowing(`${p.x},${p.y} of window ${windowId} isn't showing (hidden, scrolled away or covered); focus the window first (focus_window, or puck focus ID in a shell).`);
     return at;
   });
 }
@@ -75,12 +78,19 @@ export function windowPoints(snap: Pick<Snapshot, "windows" | "outputs" | "focus
  * windowPoints on the desktop as it is now, with a check (`still`) for pointer
  * input to run once it holds the desktop lock: another call may have moved the
  * window while this one waited. Without a window the points are global already.
+ * On a private desktop, a window whose points aren't showing is focused first,
+ * which brings it into view; on the live session that is refused instead, since
+ * it would rearrange the user's screen.
  */
 export async function fromWindow<const P extends readonly Point[]>(windowId: string | undefined, points: P) {
   type Mapped = { -readonly [K in keyof P]: Point };
   if (windowId === undefined) return { points: [...points] as Mapped, still: undefined };
   const resolve = async () => windowPoints(await snapshot(), windowId, points);
-  const at = await resolve();
+  const at = await resolve().catch(async (err: unknown) => {
+    if (!(err instanceof NotShowing) || desktop() !== "private") throw err;
+    await withFocus((focus) => focus.on(windowId), { restoreFocus: false, shows: "all" });
+    return resolve();
+  });
   const still = async () => {
     const now = await resolve();
     if (now.some((p, i) => p.x !== at[i]?.x || p.y !== at[i]?.y)) throw new Error(`Window ${windowId} moved while the input waited; nothing was sent.`);
