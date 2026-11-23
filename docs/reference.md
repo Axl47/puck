@@ -44,7 +44,7 @@ puck type --window ID TEXT
 puck spend                                 # today's agent spend from T3 Code, as JSON
 ```
 
-Coordinates are global logical pixels, as `puck state` reports them, or counted from a window's corner with `--window ID`. Write negative values as `--point=-10,20`, and put `--` before negative positionals. Click, drag and scroll put the pointer and focus back afterwards.
+Coordinates are global logical pixels, as `puck state` reports them, or counted from a window's corner with `--window ID`. Write negative values as `--point=-10,20`, and put `--` before negative positionals. Click, drag and scroll put the pointer and focus back afterwards. They refuse the strip of a window peeking in at the edge (under 160 px of it showing), unless the point is counted from that window: focus it first.
 
 ## Pickers and overlays
 

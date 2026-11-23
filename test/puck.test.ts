@@ -12,7 +12,7 @@ import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { cleanForOcr, digitZeros, type Gray, parsePnm, toInk } from "../src/ocr.ts";
-import { NotShowing, dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
+import { NotShowing, dragOps, edgeRefusal, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
 import { chordArgs, keyTarget, overlayKeysRefusal } from "../src/keys.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
@@ -309,6 +309,19 @@ describe("onScreen", () => {
     expect(windowPoints(snap, spotify.id, [{ x: 10, y: 20 }])).toEqual([{ x: spotify.x + 10, y: spotify.y + 20 }]);
     expect(() => windowPoints(snap, spotify.id, [{ x: spotify.w, y: 0 }])).toThrow(/outside window/);
     expect(() => windowPoints(snap, t3.id, [{ x: 10, y: 20 }])).toThrow(NotShowing); // a private desktop focuses it instead
+  });
+
+  it("refuses input on a neighbour peeking in at the edge", () => {
+    // A private desktop's scrolling layout, as when a click at 18,45 closed Obsidian.
+    const outputs = [{ ...snap.outputs[0]!, name: "HEADLESS-1", position: { x: 0, y: 0 }, logical_size: { width: 1280, height: 720 } }];
+    const helium = { ...spotify, id: "helium", output: "HEADLESS-1", x: 43, y: 10, w: 1229, h: 701 };
+    const obsidian = { ...helium, id: "obsidian", x: -1203, w: 1234 };
+    const desk = { windows: [helium, obsidian], outputs, focused: helium };
+    expect(edgeRefusal(desk, { x: 18, y: 45 })).toMatch(/31×701 strip of .* window obsidian/);
+    expect(edgeRefusal(desk, { x: 600, y: 300 })).toBeNull();
+    // A neighbour beside a narrow column shows plenty; so does a focused column wider than the output.
+    expect(edgeRefusal({ ...desk, windows: [helium, { ...obsidian, x: -676 }] }, { x: 18, y: 45 })).toBeNull();
+    expect(edgeRefusal({ ...desk, windows: [{ ...helium, x: 10, w: 3168 }] }, { x: 640, y: 400 })).toBeNull();
   });
 
   it("is in the desktop view with whether the workspace is shown", () => {

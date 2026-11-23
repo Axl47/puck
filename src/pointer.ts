@@ -58,6 +58,27 @@ export function windowAt(snap: { windows: readonly Window[]; outputs: readonly O
 /** A point of a window that's off screen, scrolled away or covered, so input there would reach something else. */
 export class NotShowing extends Error {}
 
+/** How much of a cut-off window can show before it counts as a strip: wider than a title bar's three buttons. */
+const STRIP = 160;
+
+/**
+ * Why input at `p` must not go to the window there, or null to go ahead. In a
+ * scrolling layout the focused column's neighbours peek in at the output's
+ * edge, a strip as wide as what the focused column leaves free (31 px on a
+ * private desktop), and the part of the window that shows is its edge, where
+ * its own title-bar controls sit: a global click meant to bring Obsidian into
+ * view hit its close button. So a window cut off by its output with less than
+ * STRIP pixels showing on that side refuses input.
+ */
+export function edgeRefusal(snap: Pick<Snapshot, "windows" | "outputs" | "focused">, p: Point): string | null {
+  const w = windowAt(snap, p);
+  const shown = w && onScreen(w, snap.outputs);
+  if (!w || !shown) return null;
+  const strip = (shown.width < w.w && shown.width < STRIP) || (shown.height < w.h && shown.height < STRIP);
+  if (!strip) return null;
+  return `${p.x},${p.y} is on a ${shown.width}×${shown.height} strip of ${w.app_id} window ${w.id} peeking in at the edge, where a click lands blind; nothing was sent. Focus it first (focus_window, or puck focus ID in a shell), or count the point from its corner with window_id.`;
+}
+
 /**
  * Points counted from a window's top-left corner, as in a screenshot of it, as
  * global ones. Throws for a point that isn't showing there (off the window,
@@ -223,7 +244,8 @@ export function inputRefusal(all: readonly Layer[], overlay: string | undefined,
  * Runs pointer input at `at` (the current position when null), then puts the
  * user's focus and the pointer back. Holds the desktop lock with
  * focus-follows-mouse paused, refuses while a shell panel is open (it would take
- * the input) unless it's the `overlay` the caller names, and checks the pointer
+ * the input) unless it's the `overlay` the caller names, refuses input on the
+ * strip of a window peeking in at the edge (edgeRefusal), and checks the pointer
  * landed before pressing anything, so a user moving the mouse stops it.
  * PUCK_OUTPUTS must allow every point the input reaches, a drag's glide
  * included. Input into an overlay usually closes it (a picker returns its
@@ -235,7 +257,11 @@ export function inputRefusal(all: readonly Layer[], overlay: string | undefined,
 export async function pointerInput(
   at: Point | null,
   input: (outs: readonly Output[]) => readonly PointerOp[],
-  opts: { overlay?: string | undefined; /** fromWindow's check, run under the lock before anything moves. */ still?: (() => Promise<void>) | undefined } = {},
+  opts: {
+    overlay?: string | undefined;
+    /** fromWindow's check, run under the lock before and after the pointer moves. Global points get edgeRefusal's in its place. */
+    still?: (() => Promise<void>) | undefined;
+  } = {},
 ) {
   // Refusals come before withFocus, whose cleanup would warp the cursor to the user's window.
   const outs = await outputs();
@@ -269,8 +295,15 @@ export async function pointerInput(
         focus.abandon(); // nothing was done
         throw new Error(late);
       }
+      // A point counted from a window aims at it on purpose, and into an overlay the
+      // window beneath doesn't matter; any other may not land on a peeking strip.
+      const edge = async () => {
+        const why = edgeRefusal(await snapshot(), target);
+        if (why) throw new Error(why);
+      };
+      const still = opts.still ?? (opts.overlay ? undefined : edge);
       try {
-        await opts.still?.();
+        await still?.();
       } catch (err) {
         focus.abandon(); // nothing was done
         throw err;
@@ -280,7 +313,7 @@ export async function pointerInput(
       // Once more, late: a window that opens meanwhile shifts the others. Its refusal waits
       // for the pointer check, then takes the usual way out, which puts the pointer back.
       // What moves between this and the press isn't caught.
-      const moved = await opts.still?.().then(
+      const moved = await still?.().then(
         () => undefined,
         (err: unknown) => err,
       );
