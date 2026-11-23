@@ -243,29 +243,45 @@ function runAgent(prompt: string, dir: string, transcript: string): Promise<numb
   });
 }
 
-/** Claude Code session transcripts written since `since` that hold `text`. */
+/**
+ * Claude Code session transcripts created since `since` that hold `text`. Other
+ * sessions on the machine may mention the benchmark too (an agent running it,
+ * say), so only a session started after the run began, quoting the task's
+ * prompt as JSON does, counts.
+ */
 function sessionsSince(since: number, text: string): string[] {
   const root = join(homedir(), ".claude", "projects");
+  const quoted = JSON.stringify(text).slice(1, -1);
   return readdirSync(root, { recursive: true, encoding: "utf8" })
     .filter((p) => p.endsWith(".jsonl"))
     .map((p) => join(root, p))
-    .filter((p) => statSync(p).mtimeMs >= since && readFileSync(p, "utf8").includes(text))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+    .filter((p) => statSync(p).birthtimeMs >= since && readFileSync(p, "utf8").includes(quoted))
+    .sort((a, b) => statSync(b).birthtimeMs - statSync(a).birthtimeMs);
 }
+
+/** The model a session's responses came from, so a wrong pick in the app isn't recorded as `model`. */
+const sessionModel = (path: string) =>
+  readFileSync(path, "utf8")
+    .split("\n")
+    .filter((l) => l.startsWith("{"))
+    .map((l) => JSON.parse(l) as { type?: string; message?: { model?: string } })
+    .find((l) => l.type === "assistant" && l.message?.model)?.message?.model;
 
 /**
  * Claude desktop can't be driven from a script, so a person runs its side: the
  * prompt goes to the clipboard, they paste it into a new Code session on
  * `model` with computer use on, and press Enter here once the agent is done.
  */
-async function assisted(prompt: string, dir: string) {
+async function assisted(prompt: string, task: Task, dir: string) {
   spawnSync("pbcopy", { input: prompt });
   const since = Date.now();
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  await rl.question(`\nPrompt copied. In Claude desktop, start a new Code session on ${model}, paste it, and let it run.\nPress Enter here when it has finished. `);
+  await rl.question(`\n[${task.id}] Prompt copied. In Claude desktop, start a new Code session on ${model}, paste it, and let it run.\nPress Enter here when it has finished. `);
   rl.close();
-  const [session] = sessionsSince(since, "Lanternworks");
-  if (!session) throw new Error("no Claude session transcript with the prompt was written since the run started");
+  const [session] = sessionsSince(since, task.prompt);
+  if (!session) throw new Error(`no Claude session started since this run began quotes the ${task.id} prompt`);
+  const used = sessionModel(session);
+  if (!used?.startsWith(model)) throw new Error(`the session ran on ${used ?? "an unknown model"}, not ${model}; redo this task on ${model}`);
   cpSync(session, join(dir, "transcript.jsonl"));
   return claudeSessionUsage(session, (tool) => tool.startsWith("mcp__computer-use__"));
 }
@@ -280,7 +296,7 @@ async function runOne(t: Task, rep: number): Promise<Row> {
   const prompt = `${PREAMBLE}\n\nTask: ${t.prompt}`;
   let measured: Usage & { wall_ms: number };
   if (client === "claude-desktop") {
-    measured = await assisted(prompt, dir);
+    measured = await assisted(prompt, t, dir);
   } else {
     const wall_ms = await runAgent(prompt, dir, transcript);
     if (client === "codex") checkCodexHome();
