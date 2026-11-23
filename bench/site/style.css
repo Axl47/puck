@@ -1,0 +1,7 @@
+body { font: 16px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: #1d1d1f; background: #fafaf7; }
+nav a { margin-right: 1rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #ddd; }
+label { display: block; margin: .8rem 0 .3rem; }
+input, select, button { font: inherit; padding: .3rem .5rem; }
+#result { margin-top: 1.5rem; font-size: 1.2rem; }

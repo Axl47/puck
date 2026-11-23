@@ -1,0 +1,75 @@
+{
+  "title": "Desktop agents: Puck vs. computer use",
+  "fields": {
+    "model": { "label": "Model" },
+    "harness": { "label": "Harness" },
+    "platform": { "label": "Platform" },
+    "client": { "label": "Client" },
+    "task": { "label": "Task" },
+    "passed": { "label": "Passed" },
+    "wall_ms": { "label": "Time", "format": "ms" },
+    "turns": { "label": "Turns", "format": "integer" },
+    "tool_calls": { "label": "Tool calls", "format": "integer" },
+    "failed_actions": { "label": "Failed actions", "format": "integer" },
+    "screenshots": { "label": "Images", "format": "integer" },
+    "input_tokens": { "label": "Input", "format": "tokens" },
+    "output_tokens": { "label": "Output", "format": "tokens" },
+    "cache_read_tokens": { "label": "Cached", "format": "tokens" }
+  },
+  "filters": ["harness", "client"],
+  "views": [
+    {
+      "kind": "tiles",
+      "measures": [
+        { "agg": "count", "label": "Runs" },
+        { "agg": "rate", "field": "passed", "label": "Pass rate" },
+        { "agg": "median", "field": "wall_ms", "label": "Median time" },
+        { "agg": "median", "field": "input_tokens", "label": "Median input" }
+      ]
+    },
+    {
+      "kind": "scatter",
+      "title": "Time vs. tokens",
+      "by": ["model", "harness"],
+      "x": { "agg": "median", "field": "input_tokens", "label": "Median input tokens" },
+      "y": { "agg": "median", "field": "wall_ms", "label": "Median time" },
+      "color": "harness"
+    },
+    {
+      "kind": "table",
+      "title": "By model and harness",
+      "by": ["model", "harness"],
+      "color": "harness",
+      "measures": [
+        { "agg": "rate", "field": "passed", "label": "Pass", "meter": true },
+        { "agg": "median", "field": "wall_ms", "label": "Time" },
+        { "agg": "median", "field": "turns", "label": "Turns" },
+        { "agg": "median", "field": "screenshots", "label": "Images" },
+        { "agg": "median", "field": "input_tokens", "label": "Input" },
+        { "agg": "median", "field": "output_tokens", "label": "Output" },
+        { "agg": "sum", "field": "failed_actions", "label": "Failed" }
+      ]
+    },
+    {
+      "kind": "grid",
+      "title": "Median time per task",
+      "rows": "task",
+      "columns": ["model", "harness"],
+      "measure": { "agg": "median", "field": "wall_ms" }
+    },
+    {
+      "kind": "grid",
+      "title": "Median input tokens per task",
+      "rows": "task",
+      "columns": ["model", "harness"],
+      "measure": { "agg": "median", "field": "input_tokens" }
+    },
+    {
+      "kind": "bars",
+      "title": "Failed actions",
+      "by": "model",
+      "stack": "harness",
+      "measure": { "agg": "sum", "field": "failed_actions" }
+    }
+  ]
+}
