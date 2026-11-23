@@ -44,15 +44,16 @@ const contains = (haystack: string, needle: string) => haystack.toLowerCase().re
 
 const cancelled = (extra: unknown) => z.object({ signal: z.instanceof(AbortSignal) }).safeParse(extra).data?.signal.aborted === true;
 
-/** Polls `check` until it gives a value, at least once, until the timeout; null when it never did. */
+/** Polls `check` until it gives a value, starting no check after the timeout; null when none did. */
 async function poll<T>(timeoutMs: number, extra: unknown, check: () => Promise<T | null>): Promise<T | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const found = await check();
     if (found !== null) return found;
-    if (Date.now() >= deadline) return null;
+    const left = deadline - Date.now();
+    if (left <= 0) return null;
     if (cancelled(extra)) throw new Error("Cancelled.");
-    await sleep(250);
+    await sleep(Math.min(250, left));
   }
 }
 

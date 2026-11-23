@@ -50,7 +50,8 @@ export function createServer(): McpServer {
       const start = Date.now();
       let on: Desktop | null = null;
       const run = async () => {
-        if (name === "desktop_state") return call(...args);
+        // A run's steps each choose as their own call would (a launch_app among them may start the private desktop).
+        if (name === "desktop_state" || name === "run") return call(...args);
         // Decided once, as the call starts: a switch to the live session made while
         // the private desktop comes up must not take this launch with it.
         const opens = name === "launch_app" && followsPrivateDesktop();

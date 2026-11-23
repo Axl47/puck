@@ -65,14 +65,9 @@ describe("runSteps", () => {
 });
 
 describe("sanitizeArgs for run", () => {
-  it("sanitizes each step as its own tool", () => {
-    const args = { steps: [{ tool: "type_text", args: { window_id: "w1", text: "hunter2" } }, { tool: "press_keys", args: { keys: ["h", "Return"] } }] };
-    expect(sanitizeArgs("run", args)).toEqual({
-      steps: [
-        { tool: "type_text", args: { window_id: "w1", text: { chars: 7 } } },
-        { tool: "press_keys", args: { keys: ["Return"], typed: 1 } },
-      ],
-    });
-    expect(sanitizeArgs("run", { steps: "hunter2" })).toBeNull();
+  it("keeps only the steps' tools", () => {
+    const args = { steps: [{ tool: "type_text", args: { window_id: "w1", text: ["hunter2"] } }, { tool: "wait", args: { text: "hunter2" } }] };
+    expect(sanitizeArgs("run", args)).toEqual({ steps: ["type_text", "wait"] });
+    expect(sanitizeArgs("run", { steps: "hunter2" })).toEqual({ steps: [] });
   });
 });
