@@ -161,10 +161,15 @@ export type InspectOptions = { text: TextMode; screenshot?: string | true | unde
 export async function inspect(target: InspectTarget, opts: InspectOptions) {
   const snap = await snapshot();
   const errors: string[] = [];
-  const pointer = await pointerPosition(snap.outputs).catch((err: unknown) => {
-    errors.push(`pointer: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  });
+  // Only --pointer reads it: the probe maps an overlay, so the app under the pointer sees it
+  // leave and come back, and a click in that moment is lost.
+  const pointer =
+    target.kind === "pointer"
+      ? await pointerPosition(snap.outputs).catch((err: unknown) => {
+          errors.push(`pointer: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        })
+      : null;
 
   // The rectangle inspected, the window it's about, and the point whose element to report.
   let rect: Rect;
