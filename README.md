@@ -61,6 +61,32 @@ If Puck can't tell for certain which desktop an agent should use, it refuses rat
 
 Screenshots are scaled to about 1,600 px on the long edge, so one costs an agent around 1.6k tokens.
 
+## Puck vs. computer use
+
+A quick test, not a benchmark. Four models each did four short workflows that start in Helium and end with an edit in an Obsidian vault. Each model ran once with Puck on Linux and once with the computer use that ships in Claude desktop or Codex, on macOS. All 80 runs passed. The figures are medians per run, except failed actions, which are an average.
+
+| Model | Time, Puck | Time, computer use | Work tokens, Puck | Work tokens, computer use | Failed actions, Puck | Failed actions, computer use |
+|---|---|---|---|---|---|---|
+| Claude Sonnet 5.5 | 21 s | 36 s | 94k | 132k | 0.1 | 3 |
+| Claude Opus 5.5 | 41 s | 1 m 32 s | 77k | 532k | 0 | 3 |
+| GPT-6.1 Terra | 38 s | 31 s | 107k | 110k | 0.3 | 0.3 |
+| GPT-6.2 Sol | 38 s | 52 s | 129k | 302k | 0.5 | 0 |
+
+Work tokens are the prompt tokens a run added on top of its fixed context (system prompt, tool definitions and task), counted for every model request. A failed action is a tool call that returned an error.
+
+### How the two sides differ
+
+- **Runs.** Puck and Codex computer use: 12 runs per model (3 of each task). Claude desktop: 4 per model (1 of each), because each one was started by hand.
+- **Operating system.** Puck drove a private 1280×720 desktop on Linux. Computer use drove the Mac's live screen. Both used Helium and Obsidian, but each OS has its own builds and window behaviour, so the OS differs along with the tool.
+- **Harness.**
+  - Claude with Puck: headless Claude Code with Puck as its only tool and no settings or CLAUDE.md, so about 10k tokens of fixed context.
+  - Claude desktop: a Code session that carries Claude Code's own tools, the user's MCP servers, skills and CLAUDE.md, about 80k tokens on every request. That is why the table compares work tokens, not total input. Total input was 6–10× higher on Claude desktop.
+  - Codex: the same `codex exec` setup on both sides, with one tool server: Puck on Linux, the bundled `unified-computer-use` plugin on the Mac.
+- **Instructions.** Every agent got the same task prompt, which bans terminals, file tools and browser automation. Each tool server adds its own usage instructions.
+- **Timing.** The runner times Puck and Codex runs from process start to exit. Claude desktop runs are timed from the first to the last line of the session transcript, which leaves out startup and slightly favours computer use.
+
+The tasks, runner and raw results are in [bench/](bench/README.md).
+
 ## Requirements
 
 Puck is built for one desktop stack and talks to it directly:
