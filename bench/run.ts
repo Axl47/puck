@@ -61,6 +61,8 @@ export type Row = Omit<Usage, "final_message"> & {
   client: "claude-code" | "claude-desktop" | "codex";
   model: string;
   effort: string;
+  /** `input_tokens` minus `context_tokens` per request: the prompt tokens the work added, not the harness's fixed context. */
+  work_tokens: number | null;
   rep: number;
   passed: boolean;
   detail: string;
@@ -283,7 +285,8 @@ async function assisted(prompt: string, task: Task, dir: string) {
   const used = sessionModel(session);
   if (!used?.startsWith(model)) throw new Error(`the session ran on ${used ?? "an unknown model"}, not ${model}; redo this task on ${model}`);
   cpSync(session, join(dir, "transcript.jsonl"));
-  return claudeSessionUsage(session, (tool) => tool.startsWith("mcp__computer-use__"));
+  // ToolSearch only loads the computer-use tools' definitions; it can't touch the desktop.
+  return claudeSessionUsage(session, (tool) => tool === "ToolSearch" || tool.startsWith("mcp__computer-use__"));
 }
 
 async function runOne(t: Task, rep: number): Promise<Row> {
@@ -314,9 +317,10 @@ async function runOne(t: Task, rep: number): Promise<Row> {
   await sleep(2500);
   const { passed, detail } = t.check(vault);
   const { final_message: _, ...usage } = measured;
+  const work_tokens = usage.context_tokens === null ? null : usage.input_tokens - usage.turns * usage.context_tokens;
   return {
     run_id, started_at, task: t.id, harness: MAC ? "computer-use" : "puck", platform: MAC ? "macos" : "linux",
-    client: client === "claude" ? "claude-code" : client, model, effort, rep, passed, detail, ...usage,
+    client: client === "claude" ? "claude-code" : client, model, effort, rep, passed, detail, work_tokens, ...usage,
   };
 }
 

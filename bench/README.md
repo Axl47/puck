@@ -70,6 +70,7 @@ Each line of `bench/results/runs.jsonl` is one run, with these fields:
 - Outcome: `passed`, plus `detail`, which says why a run failed.
 - Effort spent: `wall_ms`, `turns`, `tool_calls`, `failed_actions` (tool calls that errored), and `screenshots` (images tools handed back to the model).
 - Tokens: `input_tokens` counts every prompt token the model read, cached or not. `cache_read_tokens` and `cache_write_tokens` are the cached parts. `output_tokens` is what the model wrote.
-- Rule-breaking: `violations` lists banned tools the agent used.
+- `context_tokens` is the first request's prompt (system prompt, tool definitions, task), which every later request carries again. `work_tokens` is `input_tokens` minus that context once per request: what the run itself added, mostly screenshots and tool results. Compare harnesses on `work_tokens`. A Claude desktop session carries about 80k tokens of context: Claude Code's tools, your MCP servers, skills and CLAUDE.md. The Linux runs carry about 10k.
+- Rule-breaking: `violations` lists banned tools the agent used. Claude desktop's `ToolSearch` doesn't count, since it only loads the computer-use tools.
 
 `turns` means different things for each client. For Claude Code it is the number of model requests. Codex reports usage per task rather than per request, so for Codex it is tool calls plus the final answer.

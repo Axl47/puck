@@ -13,6 +13,12 @@ export type Usage = {
   /** Images handed back to the model by tools (screenshots, mostly). */
   screenshots: number;
   input_tokens: number;
+  /**
+   * Prompt tokens of the first model request: the system prompt, tool
+   * definitions and task, which every later request carries again. The rest of
+   * `input_tokens` is what the work itself added (screenshots, tool results).
+   */
+  context_tokens: number | null;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
@@ -22,12 +28,13 @@ export type Usage = {
 };
 
 type Block = { type?: string; name?: string; is_error?: boolean; content?: unknown; text?: string };
+type ClaudeUsage = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 type ClaudeEvent = {
   type?: string;
-  message?: { content?: Block[] | string };
+  message?: { id?: string; content?: Block[] | string; usage?: ClaudeUsage };
   result?: string;
   num_turns?: number;
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+  usage?: ClaudeUsage;
 };
 type CodexItem = { type?: string; server?: string; tool?: string; status?: string; error?: unknown; text?: string; result?: { content?: Block[]; isError?: boolean } | null };
 type CodexEvent = { type?: string; thread_id?: string; item?: CodexItem; usage?: { input_tokens?: number; cached_input_tokens?: number; cache_write_input_tokens?: number; output_tokens?: number } };
@@ -38,12 +45,15 @@ const lines = <T>(path: string): T[] =>
     .filter((l) => l.startsWith("{"))
     .map((l) => JSON.parse(l) as T);
 
+const prompt = (u: ClaudeUsage) => (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+
 const images = (content: unknown) => (Array.isArray(content) ? content.filter((c: Block) => c.type === "image").length : 0);
 
 /** Reads `claude -p --output-format stream-json --verbose` output. */
 export function claudeUsage(path: string, allowed: (tool: string) => boolean): Usage {
-  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
+  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, context_tokens: null, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
   for (const event of lines<ClaudeEvent>(path)) {
+    if (event.type === "assistant" && event.message?.usage && !usage.context_tokens) usage.context_tokens = prompt(event.message.usage);
     const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
     for (const block of blocks) {
       if (event.type === "assistant" && block.type === "tool_use" && block.name) {
@@ -71,7 +81,7 @@ export function claudeUsage(path: string, allowed: (tool: string) => boolean): U
 type SessionLine = {
   type?: string;
   timestamp?: string;
-  message?: { id?: string; content?: Block[] | string; usage?: ClaudeEvent["usage"] };
+  message?: { id?: string; content?: Block[] | string; usage?: ClaudeUsage };
 };
 
 /**
@@ -81,7 +91,7 @@ type SessionLine = {
  * Also returns the time from the first line to the last.
  */
 export function claudeSessionUsage(path: string, allowed: (tool: string) => boolean): Usage & { wall_ms: number } {
-  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
+  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, context_tokens: null, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
   const counted = new Set<string>();
   const times: number[] = [];
   for (const line of lines<SessionLine>(path)) {
@@ -103,24 +113,31 @@ export function claudeSessionUsage(path: string, allowed: (tool: string) => bool
     if (line.type === "assistant" && id && u && !counted.has(id)) {
       counted.add(id);
       usage.turns++;
+      if (!usage.context_tokens) usage.context_tokens = prompt(u);
       usage.cache_read_tokens += u.cache_read_input_tokens ?? 0;
       usage.cache_write_tokens += u.cache_creation_input_tokens ?? 0;
-      usage.input_tokens += (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      usage.input_tokens += prompt(u);
       usage.output_tokens += u.output_tokens ?? 0;
     }
   }
   return { ...usage, wall_ms: times.length ? Math.max(...times) - Math.min(...times) : 0 };
 }
 
+type TokenCount = { payload?: { type?: string; info?: { last_token_usage?: { input_tokens?: number } } | null } };
+
 /**
- * Model requests in a Codex rollout (one `token_count` event each), found under
- * `sessions` by thread id. Rollouts are zstd-compressed on some installs.
+ * Prompt tokens of each model request in a Codex rollout (one `token_count`
+ * event each), found under `sessions` by thread id. Rollouts are
+ * zstd-compressed on some installs.
  */
-function codexRequests(sessions: string, thread: string): number | undefined {
+export function codexRequests(sessions: string, thread: string): number[] | undefined {
   const found = spawnSync("find", [sessions, "-name", `*${thread}*`], { encoding: "utf8" }).stdout.trim().split("\n")[0];
   if (!found) return undefined;
   const text = found.endsWith(".zst") ? spawnSync("zstd", ["-dc", found], { encoding: "utf8", maxBuffer: 1 << 30 }).stdout : readFileSync(found, "utf8");
-  return text.split("\n").filter((l) => l.includes('"token_count"') && l.includes('"last_token_usage"')).length;
+  return text
+    .split("\n")
+    .filter((l) => l.includes('"token_count"') && l.includes('"last_token_usage"'))
+    .map((l) => (JSON.parse(l) as TokenCount).payload?.info?.last_token_usage?.input_tokens ?? 0);
 }
 
 /**
@@ -130,7 +147,7 @@ function codexRequests(sessions: string, thread: string): number | undefined {
  */
 export function codexUsage(path: string, allowedServer: (server: string) => boolean, sessions?: string): Usage {
   let thread: string | undefined;
-  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
+  const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, context_tokens: null, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
   for (const event of lines<CodexEvent>(path)) {
     if (event.type === "thread.started") thread = event.thread_id;
     const item = event.item;
@@ -155,6 +172,8 @@ export function codexUsage(path: string, allowedServer: (server: string) => bool
       usage.output_tokens += event.usage.output_tokens ?? 0;
     }
   }
-  usage.turns = (sessions && thread ? codexRequests(sessions, thread) : undefined) ?? usage.tool_calls + 1;
+  const requests = sessions && thread ? codexRequests(sessions, thread) : undefined;
+  usage.turns = requests?.length ?? usage.tool_calls + 1;
+  usage.context_tokens = requests?.[0] ?? null;
   return usage;
 }
