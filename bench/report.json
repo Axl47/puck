@@ -13,6 +13,8 @@
     "failed_actions": { "label": "Failed actions", "format": "integer" },
     "screenshots": { "label": "Images", "format": "integer" },
     "input_tokens": { "label": "Input", "format": "tokens" },
+    "context_tokens": { "label": "Fixed context", "format": "tokens" },
+    "work_tokens": { "label": "Work tokens", "format": "tokens" },
     "output_tokens": { "label": "Output", "format": "tokens" },
     "cache_read_tokens": { "label": "Cached", "format": "tokens" }
   },
@@ -24,14 +26,14 @@
         { "agg": "count", "label": "Runs" },
         { "agg": "rate", "field": "passed", "label": "Pass rate" },
         { "agg": "median", "field": "wall_ms", "label": "Median time" },
-        { "agg": "median", "field": "input_tokens", "label": "Median input" }
+        { "agg": "median", "field": "work_tokens", "label": "Median work tokens" }
       ]
     },
     {
       "kind": "scatter",
-      "title": "Time vs. tokens",
+      "title": "Time vs. work tokens",
       "by": ["model", "harness"],
-      "x": { "agg": "median", "field": "input_tokens", "label": "Median input tokens" },
+      "x": { "agg": "median", "field": "work_tokens", "label": "Median work tokens" },
       "y": { "agg": "median", "field": "wall_ms", "label": "Median time" },
       "color": "harness"
     },
@@ -45,6 +47,8 @@
         { "agg": "median", "field": "wall_ms", "label": "Time" },
         { "agg": "median", "field": "turns", "label": "Turns" },
         { "agg": "median", "field": "screenshots", "label": "Images" },
+        { "agg": "median", "field": "work_tokens", "label": "Work" },
+        { "agg": "median", "field": "context_tokens", "label": "Context" },
         { "agg": "median", "field": "input_tokens", "label": "Input" },
         { "agg": "median", "field": "output_tokens", "label": "Output" },
         { "agg": "sum", "field": "failed_actions", "label": "Failed" }
@@ -59,10 +63,10 @@
     },
     {
       "kind": "grid",
-      "title": "Median input tokens per task",
+      "title": "Median work tokens per task",
       "rows": "task",
       "columns": ["model", "harness"],
-      "measure": { "agg": "median", "field": "input_tokens" }
+      "measure": { "agg": "median", "field": "work_tokens" }
     },
     {
       "kind": "bars",

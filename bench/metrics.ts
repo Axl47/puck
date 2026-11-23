@@ -33,7 +33,6 @@ type ClaudeEvent = {
   type?: string;
   message?: { id?: string; content?: Block[] | string; usage?: ClaudeUsage };
   result?: string;
-  num_turns?: number;
   usage?: ClaudeUsage;
 };
 type CodexItem = { type?: string; server?: string; tool?: string; status?: string; error?: unknown; text?: string; result?: { content?: Block[]; isError?: boolean } | null };
@@ -52,8 +51,15 @@ const images = (content: unknown) => (Array.isArray(content) ? content.filter((c
 /** Reads `claude -p --output-format stream-json --verbose` output. */
 export function claudeUsage(path: string, allowed: (tool: string) => boolean): Usage {
   const usage: Usage = { turns: 0, tool_calls: 0, failed_actions: 0, screenshots: 0, input_tokens: 0, context_tokens: null, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, violations: [], final_message: "" };
+  const requests = new Set<string>();
   for (const event of lines<ClaudeEvent>(path)) {
-    if (event.type === "assistant" && event.message?.usage && !usage.context_tokens) usage.context_tokens = prompt(event.message.usage);
+    // One model request can span several assistant events; they share its id.
+    const id = event.message?.id;
+    if (event.type === "assistant" && id && event.message?.usage && !requests.has(id)) {
+      requests.add(id);
+      usage.turns++;
+      usage.context_tokens ??= prompt(event.message.usage);
+    }
     const blocks = Array.isArray(event.message?.content) ? event.message.content : [];
     for (const block of blocks) {
       if (event.type === "assistant" && block.type === "tool_use" && block.name) {
@@ -67,7 +73,6 @@ export function claudeUsage(path: string, allowed: (tool: string) => boolean): U
     }
     if (event.type === "result") {
       const u = event.usage ?? {};
-      usage.turns = event.num_turns ?? 0;
       usage.cache_read_tokens = u.cache_read_input_tokens ?? 0;
       usage.cache_write_tokens = u.cache_creation_input_tokens ?? 0;
       usage.input_tokens = (u.input_tokens ?? 0) + usage.cache_read_tokens + usage.cache_write_tokens;
