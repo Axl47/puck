@@ -72,11 +72,21 @@ const isNamedKey = (key: string) => {
   return mods.every((m) => COMMAND_MODIFIER.test(m) || /^shift$/i.test(m)) && mods.some((m) => COMMAND_MODIFIER.test(m)) && ([...last].length === 1 || NAMED_KEY.test(last));
 };
 
-/** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments). */
-const TYPING_TOOLS = new Set(["type_text", "press_keys"]);
+/** Tools whose error messages can repeat what was typed (a failed `wtype` names its arguments); a run's repeats its steps'. */
+const TYPING_TOOLS = new Set(["type_text", "press_keys", "run"]);
 
-/** A tool's arguments for the record: typed text reduced to its length, single character keys to a count, long values cut. */
+const RunArgs = z.looseObject({ steps: z.array(z.looseObject({ tool: z.string() })) });
+
+/**
+ * A tool's arguments for the record: typed text reduced to its length, single character keys to a count, long values cut.
+ * A run keeps only its steps' tools: a step's args may hold typed text in a shape the cases below don't parse, or a wait
+ * for the text just typed. Each step that runs leaves its own record.
+ */
 export function sanitizeArgs(tool: string, args: unknown): unknown {
+  if (tool === "run") {
+    const steps = RunArgs.safeParse(args).data?.steps ?? [];
+    return { steps: steps.slice(0, ARRAY_LIMIT).map((s) => cut(s.tool)) };
+  }
   if (tool === "type_text") {
     const parsed = TypeTextArgs.safeParse(args);
     if (parsed.success) {
