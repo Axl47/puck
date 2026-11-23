@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { TEXT_MODES, type InspectTarget, type TextMode, inspect, parsePoint, parseRegion } from "./inspect.ts";
-import { pressKeys, typeText } from "./keys.ts";
+import { keyTarget, pressKeys, typeText } from "./keys.ts";
 import { loadLayout, restoreLayout, saveLayout } from "./layout.ts";
 import { BUTTONS, type Button, clickOps, dragOps, fromWindow, movePointer, pointerInput } from "./pointer.ts";
 import { identifyCaller } from "./caller.ts";
@@ -33,16 +33,17 @@ const usage = `Usage: puck <command>
   pointer drag X,Y X,Y [--window ID] [--button …] [--overlay NS]
   pointer scroll [X,Y] [--window ID] [--dx N] [--dy N] [--overlay NS]   (wheel steps; --dy=-3 scrolls up)
                    Pointer input; click, drag and scroll put the pointer and focus back
-  keys (--window ID | --overlay NS) CHORD…
-                   Press key chords, e.g. ctrl+l Return, into a window or an overlay. Keys are
+  keys [--window ID | --overlay NS] CHORD…
+                   Press key chords, e.g. ctrl+l Return, into a window (default: the focused one) or an overlay. Keys are
                    XKB names (a, Return, Escape, F5); modifiers are ctrl, shift, alt, altgr
   type --window ID TEXT
                    Type text into a window, e.g. puck type --window ID 'echo hi' (then keys … Return)
-  focus ID         Give a window the keyboard and bring it into view (one scrolled away can't be clicked)
+  focus ID         Give a window the keyboard and bring it into view
 
 Window ids are the ones open and state print. Coordinates are logical pixels: global, or
 with --window ID counted from that window's top-left corner (on a private desktop, the
-pixels of a screenshot of it; elsewhere a screenshot may be scaled).
+pixels of a screenshot of it, and a window that isn't showing is focused first; elsewhere
+a screenshot may be scaled, and one scrolled away can't be clicked until you focus it).
 Input is refused while a shell surface has the keyboard; --overlay NS sends it into
 that layer-shell namespace instead (selection for slurp), and only if it's open there.
 PUCK_OUTPUTS limits input to those outputs.
@@ -237,7 +238,5 @@ async function keysCommand(argv: string[]) {
     options: { window: { type: "string" }, overlay: { type: "string" } },
   });
   if (!positionals.length) throw new Error("keys needs at least one chord, e.g. Escape or ctrl+l");
-  if (values.window !== undefined && values.overlay === undefined) return pressKeys({ window: values.window }, positionals);
-  if (values.overlay !== undefined && values.window === undefined) return pressKeys({ overlay: values.overlay }, positionals);
-  throw new Error("keys needs exactly one of --window and --overlay");
+  return pressKeys(await keyTarget(values.window, values.overlay), positionals);
 }

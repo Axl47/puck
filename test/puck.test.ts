@@ -12,9 +12,9 @@ import { chooseTextSource, parsePoint, parseRegion, processStartedAt } from "../
 import { extentOf, resolveRef, takeSnapshot } from "../src/layout.ts";
 import { parseHistory } from "../src/noctalia.ts";
 import { cleanForOcr, digitZeros, type Gray, parsePnm, toInk } from "../src/ocr.ts";
-import { dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
+import { NotShowing, dragOps, helperPath, inputRefusal, layoutBounds, moveOp, onScreen, windowAt, windowPoints } from "../src/pointer.ts";
 import { assertOutputs, assertUnrestricted } from "../src/scope.ts";
-import { chordArgs, overlayKeysRefusal } from "../src/keys.ts";
+import { chordArgs, keyTarget, overlayKeysRefusal } from "../src/keys.ts";
 import { describeDesktop } from "../src/tools/observe.ts";
 import { type Layer, type Snapshot, parseOutputs, parseWindows, parseWorkspaces } from "../src/umbriel.ts";
 
@@ -189,6 +189,14 @@ describe("chordArgs", () => {
   });
 });
 
+describe("keyTarget", () => {
+  it("takes a window or an overlay, not both", async () => {
+    expect(await keyTarget("abc", undefined)).toEqual({ window: "abc" });
+    expect(await keyTarget(undefined, "selection")).toEqual({ overlay: "selection" });
+    await expect(keyTarget("abc", "selection")).rejects.toThrow(/not both/);
+  });
+});
+
 describe("notification history", () => {
   it("returns newest first with freedesktop ids", () => {
     const n = (id: number, ms: number, active: boolean) => ({
@@ -300,7 +308,7 @@ describe("onScreen", () => {
   it("counts a point from a window's corner, and refuses one that isn't showing there", () => {
     expect(windowPoints(snap, spotify.id, [{ x: 10, y: 20 }])).toEqual([{ x: spotify.x + 10, y: spotify.y + 20 }]);
     expect(() => windowPoints(snap, spotify.id, [{ x: spotify.w, y: 0 }])).toThrow(/outside window/);
-    expect(() => windowPoints(snap, t3.id, [{ x: 10, y: 20 }])).toThrow(/isn't showing/);
+    expect(() => windowPoints(snap, t3.id, [{ x: 10, y: 20 }])).toThrow(NotShowing); // a private desktop focuses it instead
   });
 
   it("is in the desktop view with whether the workspace is shown", () => {
