@@ -157,7 +157,7 @@ export const registerObserve: Register = (server, session) => {
     {
       title: "Inspect",
       description:
-        "What is at a region, a window, or a point (default: under the pointer): the pointer position, the window and its process, the page URL for browsers, the accessible element under the point, and the text inside (from the app's accessibility tree when it exposes one, OCR otherwise). " +
+        "What is at a region, a window, or a point (default: under the pointer, and then its position): the window and its process, the page URL for browsers, the accessible element under the point, and the text inside (from the app's accessibility tree when it exposes one, OCR otherwise). " +
         "A point is inspected through the window holding it. Coordinates are global logical pixels, as desktop_state reports them.",
       inputSchema: {
         region: z.object({ x: z.number(), y: z.number(), width: z.number().positive(), height: z.number().positive() }).optional(),
